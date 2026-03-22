@@ -1,0 +1,7 @@
+node_modules/
+downloads/
+coverage/
+*.tsbuildinfo
+npm-debug.log*
+bun-debug.log*
+.DS_Store

@@ -1,0 +1,82 @@
+Current TUI Rezi component map
+source: cli/src/tui/app.ts
+
+ui.focusTrap?  (wraps ui.page only while a focus request is pending)
+
+┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ ui.page                                                                                                                                                                                  │
+│ ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐ │
+│ │ header-shell: denseSection                                                                                                                                                           │ │
+│ │ ui.row #brand-title                  ui.spacer                                     ui.button #toggle-events                                                                          │ │
+│ │ ui.button(ghost) #brand-icon         ui.text #brand-label                                                                                                                            │ │
+│ └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                                                                                                                          │
+│ body: ui.row #body-shell (gap: 1, items: stretch)                                                                                                                                        │
+│ ┌────────────────────────────────────────────────────────────────────┐  ┌──────────────────────────────────────────────────────────────────────────┐  ┌────────────────────────────────┐ │
+│ │ sidebar: ui.column                                                 │  │ main-scroll: ui.box(scroll)                                              │  │ events-shell?: ui.box          │ │
+│ │ width≈45                                                           │  │                                                                          │  │ width≈28                       │ │
+│ │ ┌────────────────────────────────────────────────────────────────┐ │  │ ┌──────────────────────────────────────────────────────────────────────┐ │  │ ┌────────────────────────────┐ │ │
+│ │ │ room-card: denseSection                                        │ │  │ │ files-card: denseSection                                             │ │  │ │ events-card: denseSection  │ │ │
+│ │ │ ui.button(ghost) #new-room    ui.box → ui.input #room-input    │ │  │ │ ui.text title    ui.row #files-actions                               │ │  │ │ ui.text title              │ │ │
+│ │ └────────────────────────────────────────────────────────────────┘ │  │ │ ui.button #toggle-offer    ui.row #modes                             │ │  │ │ ui.button clear            │ │ │
+│ │                                                                    │  │ │ ui.button #toggle-accept    ui.button #toggle-save                   │ │  │ │ ui.button hide             │ │ │
+│ │ ┌────────────────────────────────────────────────────────────────┐ │  │ │ ui.button #clear-drafts                                              │ │  │ │ ui.box(scroll)             │ │ │
+│ │ │ self-card: denseSection                                        │ │  │ │ ui.row #files-input-row                                              │ │  │ │ ui.column(log-row*)        │ │ │
+│ │ │ ui.button(ghost) #new-self    ui.box → ui.input #name-input    │ │  │ │ ui.box → ui.input #draft-input    ui.button #add                     │ │  │ │ OR ui.empty                │ │ │
+│ │ │ ui.text (local-id suffix)                                      │ │  │ │ draft-preview?: denseSection                                         │ │  │ └────────────────────────────┘ │ │
+│ │ │ ui.row (metrics)                                               │ │  │ │ ui.text #draft-preview-status                                        │ │  │                                │ │
+│ │ │ ui.box → ui.column(ui.text + tightTag[b]) × 3                  │ │  │ │ ui.text #draft-preview-error    ui.column(file-preview-row*)         │ │  │                                │ │
+│ │ │ ui.column(profile lines)    ui.text × 4                        │ │  │ └──────────────────────────────────────────────────────────────────────┘ │  │                                │ │
+│ │ └────────────────────────────────────────────────────────────────┘ │  │ ┌──────────────────────────────────────────────────────────────────────┐ │  │                                │ │
+│ │                                                                    │  │ │ transfer-section*: denseSection                                      │ │  │                                │ │
+│ │ ┌────────────────────────────────────────────────────────────────┐ │  │ │ ui.text title    ui.button clear?                                    │ │  │                                │ │
+│ │ │ peers-card: denseSection                                       │ │  │ │ Total?: denseSection → ui.row(tightTag[b]*)                          │ │  └────────────────────────────────┘ │
+│ │ │ ui.text title    ui.spacer    ui.button × 3                    │ │  │ │ transfer-group*: denseSection                                        │ │                                     │
+│ │ │ ui.box(scroll)                                                 │ │  │ │ ui.text group-title                                                  │ │                                     │
+│ │ │ ui.column(peer-row*) OR ui.empty                               │ │  │ │ ui.row(tightTag[b]*)                                                 │ │                                     │
+│ │ │                                                                │ │  │ │                                                                      │ │                                     │
+│ │ │ ┌────────────────────────────────────────────────────────────┐ │ │  │ │ ┌──────────────────────────────────────────────────────────────────┐ │ │                                     │
+│ │ │ │ peer-row: denseSection                                     │ │ │  │ │ │ transfer-row*: denseSection                                      │ │ │                                     │
+│ │ │ │ ui.row #peer-head                                          │ │ │  │ │ │ ui.row(tightTag[b] status, tightTag[b] error?)                   │ │ │                                     │
+│ │ │ │ ui.box(t-border) → ui.checkbox                             │ │ │  │ │ │ ui.row(fact-box*)                                                │ │ │                                     │
+│ │ │ │ ui.box(border) → ui.row(...)                               │ │ │  │ │ │ ui.progress                                                      │ │ │                                     │
+│ │ │ │ ui.box(t-border) → ui.row(tightTag[b] + tightTag[b])       │ │ │  │ │ │ ui.row(fact-box*)                                                │ │ │                                     │
+│ │ │ │ ui.row(metric-row-1): ui.box → ui.column(...) × 2          │ │ │  │ │ │ ui.callout?                                                      │ │ │                                     │
+│ │ │ │ ui.row(metric-row-2): ui.box → ui.column(...) × 2          │ │ │  │ │ └──────────────────────────────────────────────────────────────────┘ │ │                                     │
+│ │ │ │ ui.column(profile lines): ui.text × 4                      │ │ │  │ │                                                                      │ │                                     │
+│ │ │ │ ui.callout?                                                │ │ │  │ │                                                                      │ │                                     │
+│ │ │ └────────────────────────────────────────────────────────────┘ │ │  │ │                                                                      │ │                                     │
+│ │ │                                                                │ │  │ │                                                                      │ │                                     │
+│ │ │                                                                │ │  │ │                                                                      │ │                                     │
+│ │ │                                                                │ │  │ │                                                                      │ │                                     │
+│ │ │                                                                │ │  │ │                                                                      │ │                                     │
+│ │ │                                                                │ │  │ │                                                                      │ │                                     │
+│ │ │                                                                │ │  │ │                                                                      │ │                                     │
+│ │ │                                                                │ │  │ │                                                                      │ │                                     │
+│ │ │                                                                │ │  │ │                                                                      │ │                                     │
+│ │ │                                                                │ │  │ │                                                                      │ │                                     │
+│ │ │                                                                │ │  │ │                                                                      │ │                                     │
+│ │ │                                                                │ │  │ │                                                                      │ │                                     │
+│ │ │                                                                │ │  │ │                                                                      │ │                                     │
+│ │ │                                                                │ │  │ │                                                                      │ │                                     │
+│ │ │                                                                │ │  │ │                                                                      │ │                                     │
+│ │ └────────────────────────────────────────────────────────────────┘ │  │ └──────────────────────────────────────────────────────────────────────┘ │                                     │
+│ │                                                                    │  │                                                                          │                                     │
+│ └────────────────────────────────────────────────────────────────────┘  └──────────────────────────────────────────────────────────────────────────┘                                     │
+│                                                                                                                                                                                          │
+│ footer-shell: ui.statusBar                                                                                                                                                               │
+│ ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐ │
+│ │ left: ui.callout                                         right: ui.toolbar → ui.row(ui.kbd + ui.text) × 4                                                                            │ │
+│ └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                                                                                                                          │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+Legend
+- denseSection = bordered ui.box → ui.column, usually with a header ui.row
+- fact-box = ui.box → ui.column(ui.text + ui.text)
+- tightTag[b] = local tightTag helper in bare-text form
+- t-border = transparent single border
+- ? = optional
+- * = repeated
+- → = direct nesting
+- × N = repeated sibling widgets

@@ -1,0 +1,51 @@
+{
+  "name": "@elefunc/send",
+  "version": "0.1.0",
+  "description": "Browser-compatible file transfer CLI and TUI powered by Bun, WebRTC, and Rezi.",
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "bun@1.3.11",
+  "engines": {
+    "bun": ">=1.3.11"
+  },
+  "bin": {
+    "send": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "patches",
+    "README.md",
+    "LICENSE",
+    "package.json"
+  ],
+  "scripts": {
+    "start": "bun run ./src/index.ts",
+    "test": "bun test",
+    "fix:rezi": "bun run ./dia/rezi-fix.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/elefunc/send.git"
+  },
+  "homepage": "https://github.com/elefunc/send#readme",
+  "bugs": {
+    "url": "https://github.com/elefunc/send/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@rezi-ui/core": "0.1.0-alpha.60",
+    "@rezi-ui/node": "0.1.0-alpha.60",
+    "cac": "^7.0.0",
+    "werift": "^0.22.9"
+  },
+  "patchedDependencies": {
+    "@rezi-ui/core@0.1.0-alpha.60": "patches/@rezi-ui%2Fcore@0.1.0-alpha.60.patch",
+    "werift@0.22.9": "patches/werift@0.22.9.patch"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  }
+}

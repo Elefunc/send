@@ -1,0 +1,13 @@
+diff --git a/lib/webrtc/src/transport/ice.js b/lib/webrtc/src/transport/ice.js
+index 55320cf9ac4ef9f44efc223a34c96dd7573f7f17..2714449eb99737b3d995ec9f87701a20c2f16fb4 100644
+--- a/lib/webrtc/src/transport/ice.js
++++ b/lib/webrtc/src/transport/ice.js
+@@ -238,7 +238,7 @@ class RTCIceTransport {
+         for (const pair of pairs) {
+             const pairStats = {
+                 type: "candidate-pair",
+-                id: (0, stats_1.generateStatsId)("candidate-pair", pair.foundation),
++                id: (0, stats_1.generateStatsId)("candidate-pair", pair.localCandidate.foundation, pair.remoteCandidate.foundation),
+                 timestamp,
+                 transportId: (0, stats_1.generateStatsId)("transport", this.id),
+                 localCandidateId: (0, stats_1.generateStatsId)("local-candidate", pair.localCandidate.foundation),
