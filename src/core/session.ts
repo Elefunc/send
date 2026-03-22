@@ -170,8 +170,6 @@ const STATS_POLL_MS = 1000
 const PROFILE_URL = "https://ip.rt.ht/"
 const PULSE_URL = "https://sig.efn.kr/pulse"
 
-type StatsEntry = { id?: string; type?: string; [key: string]: unknown }
-
 export interface PeerConnectivitySnapshot {
   rttMs: number
   localCandidateType: string
@@ -191,7 +189,6 @@ export interface PulseSnapshot {
 
 const progressOf = (transfer: TransferState) => transfer.size ? Math.max(0, Math.min(100, transfer.bytes / transfer.size * 100)) : FINAL_STATUSES.has(transfer.status as never) ? 100 : 0
 const isFinal = (transfer: TransferState) => FINAL_STATUSES.has(transfer.status as never)
-const candidateTypeRank = (type: string) => ({ host: 0, srflx: 1, prflx: 1, relay: 2 }[type] ?? Number.NaN)
 export const candidateTypeLabel = (type: string) => ({ host: "Direct", srflx: "NAT", prflx: "NAT", relay: "TURN" }[type] || "—")
 const emptyConnectivitySnapshot = (): PeerConnectivitySnapshot => ({ rttMs: Number.NaN, localCandidateType: "", remoteCandidateType: "", pathLabel: "—" })
 const emptyPulseSnapshot = (): PulseSnapshot => ({ state: "idle", at: 0, ms: 0, error: "" })
@@ -262,74 +259,54 @@ export const turnUsageState = (
 
 const timeoutSignal = (ms: number) => typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(ms) : undefined
 
-const statsEntriesFromReport = (report: unknown): StatsEntry[] => {
-  if (!report) return []
-  if (Array.isArray(report)) return report as StatsEntry[]
-  if (typeof report === "object") {
-    const values = report as { values?: () => Iterable<StatsEntry> }
-    if (typeof values.values === "function") return [...values.values()]
-    const forEachable = report as { forEach?: (fn: (value: StatsEntry) => void) => void }
-    if (typeof forEachable.forEach === "function") {
-      const entries: StatsEntry[] = []
-      forEachable.forEach(value => entries.push(value))
-      return entries
-    }
-    const iterable = report as Iterable<StatsEntry>
-    if (typeof (iterable as { [Symbol.iterator]?: () => Iterator<StatsEntry> })[Symbol.iterator] === "function") return [...iterable]
+const normalizeCandidateType = (value: unknown) => typeof value === "string" ? value.toLowerCase() : ""
+const validCandidateType = (value: string) => ["host", "srflx", "prflx", "relay"].includes(value)
+
+export const activeIcePairFromPeerConnection = (pc: { iceTransports?: unknown[] } | null | undefined) => {
+  const transports = Array.isArray(pc?.iceTransports) ? pc.iceTransports as Array<Record<string, any>> : []
+  let fallback: { transport: Record<string, any>; connection: Record<string, any>; pair: Record<string, any> } | null = null
+  for (const transport of transports) {
+    const connection = transport?.connection
+    const pair = connection?.nominated
+    if (!pair) continue
+    fallback ||= { transport, connection, pair }
+    const state = `${transport?.state ?? ""}`.toLowerCase()
+    if (!state || state === "connected" || state === "completed") return { transport, connection, pair }
   }
-  return []
+  return fallback
 }
 
-const candidatePairEntries = (entries: StatsEntry[], transportId?: string) => entries.filter(entry =>
-  entry.type === "candidate-pair"
-  && (!transportId || entry.transportId === transportId))
-
-const preferredCandidatePair = (entries: StatsEntry[]) => {
-  let selectedFallback: StatsEntry | null = null
-  let succeededFallback: StatsEntry | null = null
-  for (const entry of entries) {
-    const selected = entry.selected === true || entry.nominated === true
-    const succeeded = entry.state === "succeeded"
-    if (selected && succeeded) return entry
-    if (!selectedFallback && selected) selectedFallback = entry
-    if (!succeededFallback && succeeded) succeededFallback = entry
-  }
-  return selectedFallback || succeededFallback
-}
-
-const selectedCandidatePair = (entries: StatsEntry[], byId: Map<string, StatsEntry>) => {
-  const transport = entries.find(entry => entry.type === "transport" && typeof entry.selectedCandidatePairId === "string")
-  const transportId = typeof transport?.id === "string" ? transport.id : undefined
-  if (transport && typeof transport.selectedCandidatePairId === "string") {
-    const pair = byId.get(transport.selectedCandidatePairId)
-    if (pair?.type === "candidate-pair") return pair
-  }
-  return preferredCandidatePair(candidatePairEntries(entries, transportId)) || preferredCandidatePair(candidatePairEntries(entries))
-}
-
-export const connectivitySnapshotFromReport = (report: unknown, previous: PeerConnectivitySnapshot = emptyConnectivitySnapshot()): PeerConnectivitySnapshot => {
-  const entries = statsEntriesFromReport(report)
-  const byId = new Map(entries.flatMap(entry => typeof entry.id === "string" && entry.id ? [[entry.id, entry] as const] : []))
-  const pair = selectedCandidatePair(entries, byId)
-  const rttMs = typeof pair?.currentRoundTripTime === "number" ? pair.currentRoundTripTime * 1000 : previous.rttMs
-  const localCandidate = typeof pair?.localCandidateId === "string" ? byId.get(pair.localCandidateId) : undefined
-  const remoteCandidate = typeof pair?.remoteCandidateId === "string" ? byId.get(pair.remoteCandidateId) : undefined
-  const localCandidateType = typeof localCandidate?.candidateType === "string" ? localCandidate.candidateType : ""
-  const remoteCandidateType = typeof remoteCandidate?.candidateType === "string" ? remoteCandidate.candidateType : ""
-  if (!pair || !Number.isFinite(candidateTypeRank(localCandidateType)) || !Number.isFinite(candidateTypeRank(remoteCandidateType))) {
-    return { ...previous, rttMs }
-  }
+export const connectivitySnapshotFromPeerConnection = (
+  pc: { iceTransports?: unknown[] } | null | undefined,
+  previous: PeerConnectivitySnapshot = emptyConnectivitySnapshot(),
+): PeerConnectivitySnapshot => {
+  const pair = activeIcePairFromPeerConnection(pc)?.pair
+  const localCandidateType = normalizeCandidateType(pair?.localCandidate?.type ?? pair?.localCandidate?.candidateType)
+  const remoteCandidateType = normalizeCandidateType(pair?.remoteCandidate?.type ?? pair?.remoteCandidate?.candidateType)
+  if (!validCandidateType(localCandidateType) || !validCandidateType(remoteCandidateType)) return previous
   return {
     ...previous,
-    rttMs,
     localCandidateType,
     remoteCandidateType,
     pathLabel: `${candidateTypeLabel(localCandidateType)} ↔ ${candidateTypeLabel(remoteCandidateType)}`,
   }
 }
 
+export const probeIcePairConsentRtt = async (connection: Record<string, any> | null | undefined, pair: Record<string, any> | null | undefined) => {
+  if (!connection || !pair?.protocol?.request || typeof connection.buildRequest !== "function" || typeof connection.remotePassword !== "string") return Number.NaN
+  const request = connection.buildRequest({
+    nominate: false,
+    localUsername: connection.localUsername,
+    remoteUsername: connection.remoteUsername,
+    iceControlling: connection.iceControlling,
+  })
+  const startedAt = performance.now()
+  await pair.protocol.request(request, pair.remoteAddr, Buffer.from(connection.remotePassword, "utf8"), 0)
+  return performance.now() - startedAt
+}
+
 const sameConnectivity = (left: PeerConnectivitySnapshot, right: PeerConnectivitySnapshot) =>
-  left.rttMs === right.rttMs
+  (left.rttMs === right.rttMs || Number.isNaN(left.rttMs) && Number.isNaN(right.rttMs))
   && left.localCandidateType === right.localCandidateType
   && left.remoteCandidateType === right.remoteCandidateType
   && left.pathLabel === right.pathLabel
@@ -710,16 +687,21 @@ export class SendSession {
     if (this.stopped) return
     let dirty = false
     for (const peer of this.peers.values()) {
-      if (peer.presence !== "active" || !peer.pc) continue
-      try {
-        const next = connectivitySnapshotFromReport(await peer.pc.getStats(), peer.connectivity)
-        if (sameConnectivity(peer.connectivity, next)) continue
-        peer.connectivity = next
-        dirty = true
-        this.emit({ type: "peer", peer: this.peerSnapshot(peer) })
-      } catch {}
+      if (peer.presence !== "active") continue
+      dirty = await this.refreshPeerConnectivity(peer) || dirty
     }
     if (dirty) this.notify()
+  }
+
+  private async refreshPeerConnectivity(peer: PeerState) {
+    const activePair = activeIcePairFromPeerConnection(peer.pc as { iceTransports?: unknown[] } | null | undefined)
+    const next = connectivitySnapshotFromPeerConnection(peer.pc as { iceTransports?: unknown[] } | null | undefined, peer.connectivity)
+    const rttMs = await probeIcePairConsentRtt(activePair?.connection, activePair?.pair).catch(() => Number.NaN)
+    if (Number.isFinite(rttMs)) next.rttMs = rttMs
+    if (sameConnectivity(peer.connectivity, next)) return false
+    peer.connectivity = next
+    this.emit({ type: "peer", peer: this.peerSnapshot(peer) })
+    return true
   }
 
   private pushLog(kind: string, payload: unknown, level: "info" | "error" = "info") {
@@ -1319,8 +1301,8 @@ export class SendSession {
   }
 
   private async handleTransferControl(peer: PeerState, message: DataMessage) {
-    this.pushLog("data:in", message)
     if (message.to && message.to !== this.localId && message.to !== "*") return
+    this.pushLog("data:in", message)
     switch (message.kind) {
       case "file-offer": {
         if (!this.transfers.has(message.transferId)) {

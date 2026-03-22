@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test"
 import { mkdir, rm } from "node:fs/promises"
 import { join } from "node:path"
-import { SendSession, connectivitySnapshotFromReport, localProfileFromResponse } from "../src/core/session"
+import { sessionRuntime } from "./runtime"
+
+const { SendSession, connectivitySnapshotFromPeerConnection, probeIcePairConsentRtt, localProfileFromResponse } = sessionRuntime
 
 const incomingTransfer = (overrides: Record<string, unknown> = {}) => ({
   id: "t1",
@@ -231,92 +233,125 @@ describe("SendSession mutators", () => {
     expect(peer.outgoingQueue).toEqual(["accepted"])
   })
 
-  test("extracts connectivity path labels from getStats-style reports", () => {
-    const report = new Map([
-      ["transport-1", { id: "transport-1", type: "transport", selectedCandidatePairId: "pair-1" }],
-      ["pair-1", { id: "pair-1", type: "candidate-pair", localCandidateId: "local-1", remoteCandidateId: "remote-1", currentRoundTripTime: 0.125 }],
-      ["local-1", { id: "local-1", type: "local-candidate", candidateType: "host" }],
-      ["remote-1", { id: "remote-1", type: "remote-candidate", candidateType: "relay" }],
-    ])
-    expect(connectivitySnapshotFromReport(report)).toEqual({
-      rttMs: 125,
-      localCandidateType: "host",
-      remoteCandidateType: "relay",
-      pathLabel: "Direct ↔ TURN",
+  test("extracts connectivity path labels from nominated ICE pairs", () => {
+    const snapshot = connectivitySnapshotFromPeerConnection({
+      iceTransports: [{ state: "completed", connection: { nominated: { localCandidate: { type: "host" }, remoteCandidate: { type: "relay" } } } }],
     })
+    expect(Number.isNaN(snapshot.rttMs)).toBe(true)
+    expect(snapshot.localCandidateType).toBe("host")
+    expect(snapshot.remoteCandidateType).toBe("relay")
+    expect(snapshot.pathLabel).toBe("Direct ↔ TURN")
   })
 
-  test("falls back to a succeeded candidate pair on the active transport when selectedCandidatePairId misses", () => {
-    const report = [
-      { id: "transport-1", type: "transport", selectedCandidatePairId: "candidate-pair_host_srflx" },
-      { id: "local-1", type: "local-candidate", candidateType: "host" },
-      { id: "remote-1", type: "remote-candidate", candidateType: "srflx" },
-      { id: "pair-1", type: "candidate-pair", transportId: "transport-1", localCandidateId: "local-1", remoteCandidateId: "remote-1", state: "succeeded", currentRoundTripTime: 0.055 },
-    ]
-    expect(connectivitySnapshotFromReport(report)).toEqual({
-      rttMs: 55,
-      localCandidateType: "host",
-      remoteCandidateType: "srflx",
-      pathLabel: "Direct ↔ NAT",
+  test("falls back to any nominated pair when transport state is unavailable", () => {
+    const snapshot = connectivitySnapshotFromPeerConnection({
+      iceTransports: [{ connection: { nominated: { localCandidate: { candidateType: "host" }, remoteCandidate: { candidateType: "prflx" } } } }],
     })
+    expect(snapshot.localCandidateType).toBe("host")
+    expect(snapshot.remoteCandidateType).toBe("prflx")
+    expect(snapshot.pathLabel).toBe("Direct ↔ NAT")
   })
 
-  test("keeps the previous RTT when a later stats sample omits round-trip time", () => {
+  test("keeps the previous connectivity snapshot when no nominated pair is available", () => {
     const previous = { rttMs: 55, localCandidateType: "host", remoteCandidateType: "srflx", pathLabel: "Direct ↔ NAT" }
-    const report = [
-      { id: "transport-1", type: "transport", selectedCandidatePairId: "pair-1" },
-      { id: "local-1", type: "local-candidate", candidateType: "host" },
-      { id: "remote-1", type: "remote-candidate", candidateType: "relay" },
-      { id: "pair-1", type: "candidate-pair", localCandidateId: "local-1", remoteCandidateId: "remote-1", state: "succeeded" },
-    ]
-    expect(connectivitySnapshotFromReport(report, previous)).toEqual({
-      rttMs: 55,
-      localCandidateType: "host",
-      remoteCandidateType: "relay",
-      pathLabel: "Direct ↔ TURN",
-    })
+    expect(connectivitySnapshotFromPeerConnection({ iceTransports: [{ state: "checking", connection: {} }] }, previous)).toEqual(previous)
   })
 
-  test("patched werift transport stats use matching selected pair ids", async () => {
-    const { RTCIceTransport } = await import("../node_modules/werift/lib/webrtc/src/transport/ice.js")
-    const { RTCDtlsTransport } = await import("../node_modules/werift/lib/webrtc/src/transport/dtls.js")
-    const pair = {
-      localCandidate: { foundation: "host" },
-      remoteCandidate: { foundation: "relay" },
-      nominated: true,
-      state: "succeeded",
-      packetsSent: 0,
-      packetsReceived: 0,
-      bytesSent: 0,
-      bytesReceived: 0,
-      rtt: 0.021,
+  test("updates peer path from the nominated ICE pair during connectivity refresh", async () => {
+    const session = new SendSession({ room: "demo", reconnectSocket: false }) as any
+    const peer = readyPeer()
+    peer.pc = {
+      connectionState: "connected",
+      iceTransports: [{
+        state: "completed",
+        connection: {
+          localUsername: "local",
+          remoteUsername: "remote",
+          remotePassword: "pw",
+          iceControlling: true,
+          buildRequest: () => ({}),
+          nominated: {
+            remoteAddr: "127.0.0.1:0",
+            localCandidate: { type: "host" },
+            remoteCandidate: { type: "host" },
+            protocol: { request: async () => {} },
+          },
+        },
+      }],
     }
-    const iceStats = await RTCIceTransport.prototype.getStats.call({
-      id: "ice-1",
-      localCandidates: [],
-      connection: { remoteCandidates: [], candidatePairs: [pair] },
-    }) as Array<{ type?: string; id?: string }>
-    const pairStat = iceStats.find(stat => stat.type === "candidate-pair")
-    expect(pairStat?.id).toBe("candidate-pair_host_relay")
+    session.peers.set("p1", peer)
 
-    const dtlsStats = await RTCDtlsTransport.prototype.getStats.call({
-      id: "dtls-1",
-      bytesSent: 0,
-      bytesReceived: 0,
-      packetsSent: 0,
-      packetsReceived: 0,
-      state: "connected",
-      iceTransport: {
-        state: "connected",
-        connection: { nominated: pair },
-        getStats: async () => iceStats,
+    await session.refreshPeerStats()
+
+    expect(session.snapshot().peers[0]?.localCandidateType).toBe("host")
+    expect(session.snapshot().peers[0]?.remoteCandidateType).toBe("host")
+    expect(session.snapshot().peers[0]?.pathLabel).toBe("Direct ↔ Direct")
+  })
+
+  test("probes ICE consent RTT directly from the nominated pair", async () => {
+    const calls: Array<{ request: unknown; remoteAddr: unknown; password: string }> = []
+    const rttMs = await probeIcePairConsentRtt({
+      localUsername: "local",
+      remoteUsername: "remote",
+      remotePassword: "pw",
+      iceControlling: true,
+      buildRequest: (input: unknown) => ({ built: input }),
+    }, {
+      remoteAddr: "127.0.0.1:3478",
+      protocol: {
+        request: async (request: unknown, remoteAddr: unknown, password: Buffer) => {
+          calls.push({ request, remoteAddr, password: password.toString("utf8") })
+          await Bun.sleep(5)
+        },
       },
-      localCertificate: null,
-      remoteParameters: null,
-      role: "auto",
-    }) as Array<{ type?: string; selectedCandidatePairId?: string }>
-    const transportStat = dtlsStats.find(stat => stat.type === "transport")
-    expect(transportStat?.selectedCandidatePairId).toBe(pairStat?.id)
+    })
+
+    expect(Number.isFinite(rttMs)).toBe(true)
+    expect(rttMs >= 5).toBe(true)
+    expect(calls).toEqual([{
+      request: { built: { nominate: false, localUsername: "local", remoteUsername: "remote", iceControlling: true } },
+      remoteAddr: "127.0.0.1:3478",
+      password: "pw",
+    }])
+  })
+
+  test("updates peer RTT from consent probes during connectivity refresh", async () => {
+    const session = new SendSession({ room: "demo", reconnectSocket: false }) as any
+    const peer = readyPeer()
+    const requests: unknown[] = []
+    peer.pc = {
+      connectionState: "connected",
+      iceTransports: [{
+        state: "completed",
+        connection: {
+          localUsername: "local",
+          remoteUsername: "remote",
+          remotePassword: "pw",
+          iceControlling: true,
+          buildRequest: (input: unknown) => ({ built: input }),
+          nominated: {
+            remoteAddr: "127.0.0.1:3478",
+            localCandidate: { type: "host" },
+            remoteCandidate: { type: "relay" },
+            protocol: {
+              request: async (request: unknown) => {
+                requests.push(request)
+                await Bun.sleep(5)
+              },
+            },
+          },
+        },
+      }],
+    }
+    session.peers.set("p1", peer)
+
+    await session.refreshPeerStats()
+
+    const snapshot = session.snapshot().peers[0]
+    expect(snapshot.pathLabel).toBe("Direct ↔ TURN")
+    expect(Number.isFinite(snapshot.rttMs)).toBe(true)
+    expect(snapshot.rttMs >= 5).toBe(true)
+    expect(requests).toEqual([{ built: { nominate: false, localUsername: "local", remoteUsername: "remote", iceControlling: true } }])
   })
 
   test("derives local TURN usage from active relay connectivity", () => {

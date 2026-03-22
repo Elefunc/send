@@ -10,5 +10,5 @@
     "types": ["node"],
     "lib": ["ES2023", "DOM", "DOM.Iterable"]
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "dia/**/*.ts"]
+  "include": ["src/**/*.ts", "runtime/**/*.ts", "test/**/*.ts", "dia/**/*.ts"]
 }

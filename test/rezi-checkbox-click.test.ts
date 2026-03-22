@@ -1,14 +1,16 @@
-import { DEFAULT_TERMINAL_CAPS, TEST_MOUSE_KIND_DOWN, TEST_MOUSE_KIND_UP, makeBackendBatch, ui, type RuntimeBackend } from "@rezi-ui/core"
 import { describe, expect, test } from "bun:test"
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
-import { WidgetRenderer, type WidgetRendererHooks } from "../node_modules/@rezi-ui/core/dist/app/widgetRenderer.js"
-import { defaultTheme } from "../node_modules/@rezi-ui/core/dist/theme/defaultTheme.js"
-import { installCheckboxClickPatch } from "../src/tui/rezi-checkbox-click"
+import { installCheckboxClickPatch } from "../runtime/rezi-checkbox-click"
+import { defaultThemeRuntime, reziCore, widgetRendererRuntime } from "./runtime"
 
-const hooks: WidgetRendererHooks = {
+const { DEFAULT_TERMINAL_CAPS, TEST_MOUSE_KIND_DOWN, TEST_MOUSE_KIND_UP, makeBackendBatch, ui } = reziCore
+const { WidgetRenderer } = widgetRendererRuntime
+const { defaultTheme } = defaultThemeRuntime
+
+const hooks = {
   enterRender: () => {},
   exitRender: () => {},
 }
@@ -16,7 +18,7 @@ const hooks: WidgetRendererHooks = {
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const reziCorePackagePath = resolve(packageRoot, "node_modules/@rezi-ui/core")
 
-const createBackend = (): RuntimeBackend => ({
+const createBackend = (): any => ({
   start: async () => {},
   stop: async () => {},
   dispose: () => {},
@@ -26,14 +28,14 @@ const createBackend = (): RuntimeBackend => ({
   getCaps: async () => DEFAULT_TERMINAL_CAPS,
 })
 
-const submitOrThrow = async (renderer: WidgetRenderer<{}>, view: () => any) => {
+const submitOrThrow = async (renderer: any, view: () => any) => {
   const result = renderer.submitFrame(view, {}, { cols: 40, rows: 8 }, defaultTheme, hooks)
   expect(result.ok).toBe(true)
   if (!result.ok) throw new Error(`${result.code}: ${result.detail}`)
   await result.inFlight
 }
 
-const clickCenter = (renderer: WidgetRenderer<{}>, id: string) => {
+const clickCenter = (renderer: any, id: string) => {
   const rect = renderer.getRectByIdIndex().get(id)
   expect(rect === undefined).toBe(false)
   if (!rect) throw new Error(`missing rect for ${id}`)
@@ -48,7 +50,7 @@ describe("Rezi checkbox click patch", () => {
 
     let checked = false
     const changes: boolean[] = []
-    const renderer = new WidgetRenderer<{}>({ backend: createBackend() })
+    const renderer = new WidgetRenderer({ backend: createBackend() })
     const renderCheckbox = () => ui.checkbox({
       id: "check",
       checked,
@@ -123,7 +125,7 @@ describe("Rezi checkbox click patch", () => {
 
     let checked = false
     const changes: boolean[] = []
-    const renderer = new WidgetRenderer<{}>({ backend: createBackend() })
+    const renderer = new WidgetRenderer({ backend: createBackend() })
     const renderCheckbox = () => ui.checkbox({
       id: "check",
       checked,
@@ -166,7 +168,7 @@ describe("Rezi checkbox click patch", () => {
     await installCheckboxClickPatch()
 
     let presses = 0
-    const renderer = new WidgetRenderer<{}>({ backend: createBackend() })
+    const renderer = new WidgetRenderer({ backend: createBackend() })
     const renderButton = () => ui.button({
       id: "press",
       label: "Press",
@@ -207,15 +209,15 @@ describe("Rezi checkbox click patch", () => {
     const tempRoot = mkdtempSync(join(tmpdir(), "send-installed-shape-"))
     try {
       const sendRoot = join(tempRoot, "node_modules/@elefunc/send")
-      const sendTuiDir = join(sendRoot, "src/tui")
+      const sendRuntimeDir = join(sendRoot, "runtime")
       const reziCoreLink = join(tempRoot, "node_modules/@rezi-ui/core")
-      mkdirSync(sendTuiDir, { recursive: true })
+      mkdirSync(sendRuntimeDir, { recursive: true })
       mkdirSync(dirname(reziCoreLink), { recursive: true })
       symlinkSync(reziCorePackagePath, reziCoreLink, "dir")
       writeFileSync(join(sendRoot, "package.json"), JSON.stringify({ name: "@elefunc/send", type: "module" }))
-      copyFileSync(resolve(packageRoot, "src/tui/rezi-checkbox-click.ts"), join(sendTuiDir, "rezi-checkbox-click.ts"))
+      cpSync(resolve(packageRoot, "runtime"), sendRuntimeDir, { recursive: true })
 
-      const installedModule = await import(pathToFileURL(join(sendTuiDir, "rezi-checkbox-click.ts")).href) as {
+      const installedModule = await import(pathToFileURL(join(sendRuntimeDir, "rezi-checkbox-click.ts")).href) as {
         installCheckboxClickPatch: () => Promise<void>
       }
       await installedModule.installCheckboxClickPatch()

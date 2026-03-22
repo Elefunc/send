@@ -19,7 +19,7 @@ send
 send peers
 send offer ./file.txt
 send accept
-send tui --events
+send tui
 ```
 
 When no subcommand is provided, `send` launches the TUI by default.
@@ -28,7 +28,7 @@ When no subcommand is provided, `send` launches the TUI by default.
 
 `--room` is optional on all commands. If you omit it, `send` creates a random room and prints or shows it.
 
-In the TUI, the room row includes a `📋` invite link that opens the equivalent web app URL for the current committed room and toggle state. Set `SEND_WEB_URL` to change its base URL; it defaults to `https://send.rt.ht/`.
+In the TUI, the room row includes a `📋` invite link that opens the equivalent web app URL for the current committed room and toggle state.
 
 ## Self Identity
 
@@ -59,4 +59,4 @@ bun run typecheck
 bun test
 ```
 
-The package is Bun-native and keeps its runtime patches in `patches/`.
+The package is Bun-native and keeps its runtime patches in `runtime/`.

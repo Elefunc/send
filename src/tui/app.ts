@@ -5,7 +5,7 @@ import { SendSession, type PeerSnapshot, type SessionConfig, type SessionSnapsho
 import { cleanLocalId, cleanName, cleanRoom, displayPeerName, fallbackName, formatBytes, type LogEntry, peerDefaultsToken, type PeerProfile, uid } from "../core/protocol"
 import { FILE_SEARCH_VISIBLE_ROWS, type FileSearchEvent, type FileSearchMatch, type FileSearchRequest } from "./file-search-protocol"
 import { deriveFileSearchScope, formatFileSearchDisplayPath, normalizeSearchQuery, offsetFileSearchMatchIndices } from "./file-search"
-import { installCheckboxClickPatch } from "./rezi-checkbox-click"
+import { installCheckboxClickPatch } from "../../runtime/rezi-checkbox-click"
 
 type Notice = { text: string; variant: "info" | "success" | "warning" | "error" }
 type DraftItem = { id: string; path: string; name: string; size: number; createdAt: number }

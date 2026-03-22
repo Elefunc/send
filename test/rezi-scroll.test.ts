@@ -1,14 +1,16 @@
-import { DEFAULT_TERMINAL_CAPS, TEST_MOUSE_KIND_SCROLL, makeBackendBatch, ui, type RuntimeBackend } from "@rezi-ui/core"
 import { describe, expect, test } from "bun:test"
-import { WidgetRenderer, type WidgetRendererHooks } from "../node_modules/@rezi-ui/core/dist/app/widgetRenderer.js"
-import { defaultTheme } from "../node_modules/@rezi-ui/core/dist/theme/defaultTheme.js"
+import { reziCore, widgetRendererRuntime, defaultThemeRuntime } from "./runtime"
 
-const hooks: WidgetRendererHooks = {
+const { DEFAULT_TERMINAL_CAPS, TEST_MOUSE_KIND_SCROLL, makeBackendBatch, ui } = reziCore
+const { WidgetRenderer } = widgetRendererRuntime
+const { defaultTheme } = defaultThemeRuntime
+
+const hooks = {
   enterRender: () => {},
   exitRender: () => {},
 }
 
-const createBackend = (): RuntimeBackend => ({
+const createBackend = (): any => ({
   start: async () => {},
   stop: async () => {},
   dispose: () => {},
@@ -26,14 +28,14 @@ const renderScrollBox = (rows: number) => ui.box({
   overflow: "scroll",
 }, Array.from({ length: rows }, (_, index) => ui.text(`row${index}`)))
 
-const submitOrThrow = async (renderer: WidgetRenderer<{}>, rows: number) => {
+const submitOrThrow = async (renderer: any, rows: number) => {
   const result = renderer.submitFrame(() => renderScrollBox(rows), {}, { cols: 40, rows: 12 }, defaultTheme, hooks)
   expect(result.ok).toBe(true)
   if (!result.ok) throw new Error(`${result.code}: ${result.detail}`)
   await result.inFlight
 }
 
-const getScrollMeta = (renderer: WidgetRenderer<{}>, id: string) => {
+const getScrollMeta = (renderer: any, id: string) => {
   const runtimeRoot = (renderer as any).committedRoot
   const layoutTree = (renderer as any).layoutTree
   const stack = [{ runtimeNode: runtimeRoot, layoutNode: layoutTree }]

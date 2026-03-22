@@ -2,9 +2,9 @@
 import { resolve } from "node:path"
 import { cac, type CAC } from "cac"
 import { cleanRoom } from "./core/protocol"
-import { SendSession, type SessionConfig, type SessionEvent } from "./core/session"
+import type { SendSession, SessionConfig, SessionEvent } from "./core/session"
 import { resolvePeerTargets } from "./core/targeting"
-import { ensureReziInputCaretPatch } from "./tui/rezi-input-caret"
+import { ensureSessionRuntimePatches, ensureTuiRuntimePatches } from "../runtime/install"
 
 export class ExitError extends Error {
   constructor(message: string, readonly code = 1) {
@@ -122,6 +122,27 @@ const waitForFinalTransfers = async (session: SendSession, transferIds: string[]
   }
 }
 
+let sessionRuntimePromise: Promise<typeof import("./core/session")> | null = null
+let tuiRuntimePromise: Promise<typeof import("./tui/app")> | null = null
+
+const loadSessionRuntime = () => {
+  if (sessionRuntimePromise) return sessionRuntimePromise
+  sessionRuntimePromise = (async () => {
+    await ensureSessionRuntimePatches()
+    return import("./core/session")
+  })()
+  return sessionRuntimePromise
+}
+
+const loadTuiRuntime = () => {
+  if (tuiRuntimePromise) return tuiRuntimePromise
+  tuiRuntimePromise = (async () => {
+    await ensureTuiRuntimePatches()
+    return import("./tui/app")
+  })()
+  return tuiRuntimePromise
+}
+
 const handleSignals = (session: SendSession) => {
   const onSignal = async () => {
     await session.close()
@@ -132,6 +153,7 @@ const handleSignals = (session: SendSession) => {
 }
 
 const peersCommand = async (options: Record<string, unknown>) => {
+  const { SendSession } = await loadSessionRuntime()
   const session = new SendSession(sessionConfigFrom(options, {}))
   handleSignals(session)
   printRoomAnnouncement(session.room, !!options.json)
@@ -158,6 +180,7 @@ const offerCommand = async (files: string[], options: Record<string, unknown>) =
   if (!files.length) throw new ExitError("offer requires at least one file path", 1)
   const selectors = offerSelectors(options.to)
   const timeoutMs = waitPeerTimeout(options.waitPeer)
+  const { SendSession } = await loadSessionRuntime()
   const session = new SendSession(sessionConfigFrom(options, {}))
   handleSignals(session)
   printRoomAnnouncement(session.room, !!options.json)
@@ -173,6 +196,7 @@ const offerCommand = async (files: string[], options: Record<string, unknown>) =
 }
 
 const acceptCommand = async (options: Record<string, unknown>) => {
+  const { SendSession } = await loadSessionRuntime()
   const session = new SendSession(sessionConfigFrom(options, { autoAcceptIncoming: true, autoSaveIncoming: true }))
   handleSignals(session)
   printRoomAnnouncement(session.room, !!options.json)
@@ -194,8 +218,7 @@ const acceptCommand = async (options: Record<string, unknown>) => {
 
 const tuiCommand = async (options: Record<string, unknown>) => {
   const initialConfig = sessionConfigFrom(options, { autoAcceptIncoming: true, autoSaveIncoming: true })
-  await ensureReziInputCaretPatch()
-  const { startTui } = await import("./tui/app")
+  const { startTui } = await loadTuiRuntime()
   await startTui(initialConfig, !!options.events)
 }
 

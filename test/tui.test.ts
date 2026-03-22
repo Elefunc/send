@@ -1,8 +1,10 @@
-import { createTestRenderer, rgb, ui } from "@rezi-ui/core"
 import { describe, expect, test } from "bun:test"
-import { clampFilePreviewSelectedIndex, consumeSatisfiedFocusRequest, createInitialTuiState, createNoopTuiActions, deriveBootFocusState, ensureFilePreviewScrollTop, filePreviewVisible, groupTransfersByPeer, moveFilePreviewSelection, renderTuiView, resolveWebUrlBase, scheduleBootNameJump, transferSummaryStats, visiblePanes, webInviteUrl, withAcceptedDraftInput } from "../src/tui/app"
+import { tuiRuntime, reziCore } from "./runtime"
 import type { PeerSnapshot, TransferSnapshot } from "../src/core/session"
 import { fallbackName } from "../src/core/protocol"
+
+const { createTestRenderer, rgb, ui } = reziCore
+const { clampFilePreviewSelectedIndex, consumeSatisfiedFocusRequest, createInitialTuiState, createNoopTuiActions, deriveBootFocusState, ensureFilePreviewScrollTop, filePreviewVisible, groupTransfersByPeer, moveFilePreviewSelection, renderTuiView, resolveWebUrlBase, scheduleBootNameJump, transferSummaryStats, visiblePanes, webInviteUrl, withAcceptedDraftInput } = tuiRuntime
 
 const createWideRenderer = () => createTestRenderer({ viewport: { cols: 180, rows: 60 } })
 const hasRenderedText = (view: ReturnType<ReturnType<typeof createWideRenderer>["render"]>, value: string) =>
