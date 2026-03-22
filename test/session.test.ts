@@ -3,7 +3,7 @@ import { mkdir, rm } from "node:fs/promises"
 import { join } from "node:path"
 import { sessionRuntime } from "./runtime"
 
-const { SendSession, connectivitySnapshotFromPeerConnection, probeIcePairConsentRtt, localProfileFromResponse } = sessionRuntime
+const { SendSession, SessionAbortedError, connectivitySnapshotFromPeerConnection, probeIcePairConsentRtt, localProfileFromResponse } = sessionRuntime
 
 const incomingTransfer = (overrides: Record<string, unknown> = {}) => ({
   id: "t1",
@@ -221,6 +221,48 @@ describe("SendSession mutators", () => {
     expect(session.snapshot().peers[0]?.selected).toBe(false)
   })
 
+  test("replaces same-id peer instances on hello and ignores stale bye from the older instance", async () => {
+    const session = new SendSession({ room: "demo", localId: "self", reconnectSocket: false }) as any
+
+    await session.onSignalMessage(JSON.stringify({
+      room: "demo",
+      from: "peer1",
+      to: "*",
+      at: Date.now(),
+      kind: "hello",
+      name: "alice",
+      reply: true,
+      instanceId: "oldinst1",
+    }))
+    expect(session.setPeerSelected("peer1", false)).toBe(true)
+
+    await session.onSignalMessage(JSON.stringify({
+      room: "demo",
+      from: "peer1",
+      to: "*",
+      at: Date.now(),
+      kind: "hello",
+      name: "alice",
+      reply: true,
+      instanceId: "newinst2",
+    }))
+
+    expect(session.snapshot().peers[0]?.presence).toBe("active")
+    expect(session.snapshot().peers[0]?.selected).toBe(false)
+
+    await session.onSignalMessage(JSON.stringify({
+      room: "demo",
+      from: "peer1",
+      to: "*",
+      at: Date.now(),
+      kind: "bye",
+      instanceId: "oldinst1",
+    }))
+
+    expect(session.snapshot().peers[0]?.presence).toBe("active")
+    expect(session.snapshot().peers[0]?.selected).toBe(false)
+  })
+
   test("reuses remembered peer selection across session instances in the same room", async () => {
     const peerSelectionMemory = new Map<string, boolean>([["peer1", false]])
     const session = new SendSession({ room: "demo", localId: "self", reconnectSocket: false, peerSelectionMemory }) as any
@@ -251,6 +293,203 @@ describe("SendSession mutators", () => {
     }))
 
     expect(nextSession.snapshot().peers[0]?.selected).toBe(true)
+  })
+
+  test("shares local TURN config with one peer or all active peers over signaling", async () => {
+    const sent: any[] = []
+    const session = new SendSession({
+      room: "demo",
+      localId: "selfzzzz",
+      reconnectSocket: false,
+      turnUrls: ["turn:turn.example.com:3478"],
+      turnUsername: "user",
+      turnCredential: "pass",
+    }) as any
+    session.socket = { readyState: WebSocket.OPEN, send: (message: string) => void sent.push(JSON.parse(message)) }
+
+    await session.onSignalMessage(JSON.stringify({
+      room: "demo",
+      from: "peer1",
+      to: "*",
+      at: Date.now(),
+      kind: "hello",
+      name: "alice",
+      reply: true,
+    }))
+    sent.length = 0
+
+    expect(session.shareTurnWithPeer("peer1")).toBe(true)
+    expect(sent[0]?.kind).toBe("turn-share")
+    expect(sent[0]?.to).toBe("peer1")
+    expect(sent[0]?.iceServers).toEqual([{ urls: "turn:turn.example.com:3478", username: "user", credential: "pass" }])
+
+    sent.length = 0
+    expect(session.shareTurnWithAllPeers()).toBe(1)
+    expect(sent[0]?.kind).toBe("turn-share")
+    expect(sent[0]?.to).toBe("*")
+    expect(sent[0]?.iceServers).toEqual([{ urls: "turn:turn.example.com:3478", username: "user", credential: "pass" }])
+  })
+
+  test("applies shared TURN config once, rebroadcasts presence, and forces peer recovery", async () => {
+    const sent: any[] = []
+    const session = new SendSession({ room: "demo", localId: "selfzzzz", reconnectSocket: false }) as any
+    session.socket = { readyState: WebSocket.OPEN, send: (message: string) => void sent.push(JSON.parse(message)) }
+
+    await session.onSignalMessage(JSON.stringify({
+      room: "demo",
+      from: "peer1",
+      to: "*",
+      at: Date.now(),
+      kind: "hello",
+      name: "alice",
+      reply: true,
+    }))
+    sent.length = 0
+
+    await session.onSignalMessage(JSON.stringify({
+      room: "demo",
+      from: "peer1",
+      to: "*",
+      at: Date.now(),
+      kind: "turn-share",
+      iceServers: [{ urls: "turn:turn.example.com:3478", username: "user", credential: "pass" }],
+    }))
+
+    expect(session.canShareTurn()).toBe(true)
+    expect(session.snapshot().turnState).toBe("idle")
+    expect(sent.some(message => message.kind === "profile" && message.turnAvailable === true)).toBe(true)
+    expect(sent.some(message => message.kind === "hello" && message.to === "peer1" && message.recovery === true)).toBe(true)
+
+    const baseline = sent.length
+    await session.onSignalMessage(JSON.stringify({
+      room: "demo",
+      from: "peer1",
+      to: "*",
+      at: Date.now(),
+      kind: "turn-share",
+      iceServers: [{ urls: "turn:turn.example.com:3478", username: "user", credential: "pass" }],
+    }))
+
+    expect(sent.length).toBe(baseline)
+  })
+
+  test("aborts a pending socket-open wait immediately when the session closes", async () => {
+    const OriginalWebSocket = globalThis.WebSocket
+    class HangingWebSocket {
+      static CONNECTING = 0
+      static OPEN = 1
+      static CLOSING = 2
+      static CLOSED = 3
+      readyState = HangingWebSocket.CONNECTING
+      onopen: ((event?: unknown) => void) | null = null
+      onmessage: ((event?: unknown) => void) | null = null
+      onerror: ((event?: unknown) => void) | null = null
+      onclose: ((event?: unknown) => void) | null = null
+      constructor(readonly url: string) {}
+      send() {}
+      close() {
+        this.readyState = HangingWebSocket.CLOSED
+        this.onclose?.(new Event("close"))
+      }
+    }
+    globalThis.WebSocket = HangingWebSocket as unknown as typeof WebSocket
+
+    try {
+      const session = new SendSession({ room: "demo", reconnectSocket: false }) as any
+      const connectPromise = session.connect()
+      await Bun.sleep(20)
+      await session.close()
+      const outcome = await Promise.race([
+        connectPromise.then(() => "resolved", (error: unknown) => error instanceof SessionAbortedError ? "aborted" : `${error}`),
+        Bun.sleep(100).then(() => "timeout"),
+      ])
+      expect(outcome).toBe("aborted")
+    } finally {
+      globalThis.WebSocket = OriginalWebSocket
+    }
+  })
+
+  test("waits for async peer teardown before session close resolves", async () => {
+    let resolvePeerClose = () => {}
+    const peerClose = new Promise<void>(resolve => { resolvePeerClose = resolve })
+    const session = new SendSession({ room: "demo", reconnectSocket: false }) as any
+    const peer = readyPeer()
+    peer.dc = {
+      readyState: "open",
+      send() {},
+      close() {},
+      onopen: () => {},
+      onclose: () => {},
+      onerror: () => {},
+      onmessage: () => {},
+    }
+    peer.pc = {
+      connectionState: "connected",
+      close: () => peerClose,
+      onicecandidate: () => {},
+      ondatachannel: () => {},
+      onnegotiationneeded: () => {},
+      onconnectionstatechange: () => {},
+      oniceconnectionstatechange: () => {},
+    }
+    session.peers.set("p1", peer)
+
+    const closing = session.close()
+    const outcome = await Promise.race([
+      closing.then(() => "closed"),
+      Bun.sleep(25).then(() => "pending"),
+    ])
+
+    expect(outcome).toBe("pending")
+    expect(session.pendingRtcCloses.size).toBe(1)
+
+    resolvePeerClose()
+    await closing
+
+    expect(session.pendingRtcCloses.size).toBe(0)
+  })
+
+  test("detaches peer RTC handlers during session close", async () => {
+    let resolvePeerClose = () => {}
+    const peerClose = new Promise<void>(resolve => { resolvePeerClose = resolve })
+    const session = new SendSession({ room: "demo", reconnectSocket: false }) as any
+    const dc: any = {
+      readyState: "open",
+      send() {},
+      close() {},
+      onopen: () => {},
+      onclose: () => {},
+      onerror: () => {},
+      onmessage: () => {},
+    }
+    const pc: any = {
+      connectionState: "connected",
+      close: () => peerClose,
+      onicecandidate: () => {},
+      ondatachannel: () => {},
+      onnegotiationneeded: () => {},
+      onconnectionstatechange: () => {},
+      oniceconnectionstatechange: () => {},
+    }
+    const peer = readyPeer()
+    peer.dc = dc
+    peer.pc = pc
+    session.peers.set("p1", peer)
+
+    const closing = session.close()
+
+    expect(dc.onopen).toBe(null)
+    expect(dc.onclose).toBe(null)
+    expect(dc.onerror).toBe(null)
+    expect(dc.onmessage).toBe(null)
+    expect(pc.onicecandidate).toBe(null)
+    expect(pc.ondatachannel).toBe(null)
+    expect(pc.onnegotiationneeded).toBe(null)
+    expect(pc.onconnectionstatechange).toBe(null)
+    expect(pc.oniceconnectionstatechange).toBe(null)
+
+    resolvePeerClose()
+    await closing
   })
 
   test("enabling auto-accept accepts current pending transfers", async () => {

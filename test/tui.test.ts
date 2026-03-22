@@ -830,7 +830,18 @@ describe("TUI view", () => {
     }
     const view = renderer.render(renderTuiView(state, createNoopTuiActions()))
     expect(view.findById("peer-toggle-p1") === null).toBe(false)
-    expect(view.findText("alice-p1") === null).toBe(false)
+    const shareButton = view.findById("peer-share-turn-p1")
+    expect(shareButton === null).toBe(false)
+    if (!shareButton) throw new Error("missing peer share button")
+    expect(shareButton.kind).toBe("button")
+    expect(shareButton.props.label).toBe("alice-p1")
+    expect(shareButton.props.dsVariant).toBe("ghost")
+    expect(shareButton.props.px).toBe(0)
+    expect((shareButton.props as any).intent).toBe(undefined)
+    expect((shareButton.props as any).style).toEqual({ fg: rgb(255, 255, 255) })
+    expect((shareButton.props as any).focusConfig?.indicator).toBe("none")
+    expect((shareButton.props as any).focusConfig?.showHint).toBe(false)
+    expect((shareButton.props as any).focusConfig?.contentStyle).toBe(undefined)
     const rtt = view.findText("RTT")
     const data = view.findText("Data")
     const turnValue = view.findText("used")
@@ -952,7 +963,7 @@ describe("TUI view", () => {
     expect(hasRenderedText(view, "(As)")).toBe(false)
   })
 
-  test("keeps the peer checkbox, name text, and status cluster vertically aligned", () => {
+  test("keeps the peer checkbox, share button, and status cluster vertically aligned", () => {
     const renderer = createWideRenderer()
     const state = createInitialTuiState({ room: "demo", reconnectSocket: false }, false)
     state.snapshot = {
@@ -982,28 +993,30 @@ describe("TUI view", () => {
     const view = renderer.render(renderTuiView(state, createNoopTuiActions()))
     const toggle = view.findById("peer-toggle-p1")
     const nameSlot = view.findById("peer-name-slot-p1")
-    const nameText = view.findById("peer-name-text-p1")
+    const shareButton = view.findById("peer-share-turn-p1")
     const statusCluster = view.findById("peer-status-cluster-p1")
     const status = view.nodes.find(node => node.kind === "status" && "label" in node.props && node.props.label === "connected")
     const autoState = view.findText("AS")
-    expect(toggle === null || nameSlot === null || nameText === null || statusCluster === null || status === undefined || autoState === null).toBe(false)
-    if (!toggle || !nameSlot || !nameText || !statusCluster || !status || !autoState) throw new Error("missing peer header nodes")
+    expect(toggle === null || nameSlot === null || shareButton === null || statusCluster === null || status === undefined || autoState === null).toBe(false)
+    if (!toggle || !nameSlot || !shareButton || !statusCluster || !status || !autoState) throw new Error("missing peer header nodes")
     const toggleCenter = toggle.rect.y + Math.floor(toggle.rect.h / 2)
-    const nameTextCenter = nameText.rect.y + Math.floor(nameText.rect.h / 2)
+    const shareButtonCenter = shareButton.rect.y + Math.floor(shareButton.rect.h / 2)
     const statusClusterCenter = statusCluster.rect.y + Math.floor(statusCluster.rect.h / 2)
-    expect(toggleCenter).toBe(nameTextCenter)
-    expect(statusClusterCenter).toBe(nameTextCenter)
+    expect(toggleCenter).toBe(shareButtonCenter)
+    expect(statusClusterCenter).toBe(shareButtonCenter)
     expect(view.findById("peer-name-shell-p1")).toBe(null)
     expect(view.findById("peer-status-p1")).toBe(null)
     expect("border" in nameSlot.props ? nameSlot.props.border : undefined).toBe("none")
-    expect(nameText.props.textOverflow).toBe("ellipsis")
+    expect(shareButton.props.label).toBe("alice-p1")
+    expect(shareButton.props.disabled).toBe(undefined)
+    expect(shareButton.props.focusable).toBe(false)
     expect(status.props.status).toBe("online")
     expect(autoState.rect.x).toBe(status.rect.x + status.rect.w + 1)
   })
 
-  test("ellipsizes long peer display names in the single-line header", () => {
+  test("renders long peer display names through the share button", () => {
     const renderer = createTestRenderer({ viewport: { cols: 86, rows: 40 } })
-    const state = createInitialTuiState({ room: "demo", reconnectSocket: false }, false)
+    const state = createInitialTuiState({ room: "demo", reconnectSocket: false, turnUrls: ["turn:turn.example.com:3478"] }, false)
     state.snapshot = {
       ...state.snapshot,
       peers: [
@@ -1028,14 +1041,13 @@ describe("TUI view", () => {
       ],
     }
     const view = renderer.render(renderTuiView(state, createNoopTuiActions()))
-    const text = view.toText()
-    const nameText = view.findById("peer-name-text-p1")
-    expect(nameText === null).toBe(false)
-    if (!nameText) throw new Error("missing peer name text")
-    expect(text.includes("abraham-twddq19g-super-extra-long-peer-label-for-ellipsis")).toBe(false)
-    expect(text.includes("…")).toBe(true)
-    expect(nameText.rect.w > 0).toBe(true)
-    expect(nameText.props.textOverflow).toBe("ellipsis")
+    const shareButton = view.findById("peer-share-turn-p1")
+    expect(shareButton === null).toBe(false)
+    if (!shareButton) throw new Error("missing peer share button")
+    expect(shareButton.rect.w > 0).toBe(true)
+    expect(shareButton.props.label).toBe("abraham-twddq19g-super-extra-long-peer-label-for-ellipsis")
+    expect(shareButton.props.disabled).toBe(undefined)
+    expect(shareButton.props.focusable).toBe(true)
   })
 
   test("pads the peer checkbox away from the left border", () => {
@@ -1164,11 +1176,59 @@ describe("TUI view", () => {
       ],
     }
     const nonEmpty = renderer.render(renderTuiView(state, createNoopTuiActions()))
-    expect(nonEmpty.findText("Peers 1/2") === null).toBe(false)
+    const shareAll = nonEmpty.findById("share-turn-all-peers")
+    const countText = nonEmpty.findById("peers-count-text")
+    expect(shareAll === null || countText === null).toBe(false)
+    if (!shareAll || !countText) throw new Error("missing peers header controls")
+    expect(shareAll.kind).toBe("button")
+    expect(shareAll.props.label).toBe("Peers")
+    expect(shareAll.props.dsVariant).toBe("ghost")
+    expect(shareAll.props.px).toBe(0)
+    expect((shareAll.props as any).intent).toBe(undefined)
+    expect((shareAll.props as any).style).toEqual({ fg: rgb(255, 255, 255), bold: true })
+    expect((shareAll.props as any).focusConfig?.indicator).toBe("none")
+    expect((shareAll.props as any).focusConfig?.showHint).toBe(false)
+    expect((shareAll.props as any).focusConfig?.contentStyle).toBe(undefined)
+    expect(countText.text).toBe("1/2")
+    expect(shareAll.props.disabled).toBe(undefined)
+    expect(shareAll.props.focusable).toBe(false)
 
     state.snapshot = { ...state.snapshot, peers: [] }
     const empty = renderer.render(renderTuiView(state, createNoopTuiActions()))
     expect(hasRenderedText(empty, "Waiting for peers in demo...")).toBe(true)
+  })
+
+  test("enables TURN share buttons only when self TURN is configured", () => {
+    const renderer = createWideRenderer()
+    const state = createInitialTuiState({ room: "demo", reconnectSocket: false, turnUrls: ["turn:turn.example.com:3478"] }, false)
+    state.snapshot = {
+      ...state.snapshot,
+      turnState: "idle",
+      peers: [
+        { id: "p1", name: "alice", displayName: "alice-p1", presence: "active", selected: true, selectable: true, ready: true, status: "connected", turn: "stun", turnState: "none", dataState: "open", lastError: "", rttMs: 0, localCandidateType: "", remoteCandidateType: "", pathLabel: "—" },
+      ],
+    }
+    let view = renderer.render(renderTuiView(state, createNoopTuiActions()))
+    const enabledShareAll = view.findById("share-turn-all-peers")
+    const enabledPeerShare = view.findById("peer-share-turn-p1")
+    expect(enabledShareAll === null || enabledPeerShare === null).toBe(false)
+    if (!enabledShareAll || !enabledPeerShare) throw new Error("missing enabled TURN share buttons")
+    expect(enabledShareAll.props.disabled).toBe(undefined)
+    expect(enabledPeerShare.props.disabled).toBe(undefined)
+    expect(enabledShareAll.props.focusable).toBe(true)
+    expect(enabledPeerShare.props.focusable).toBe(true)
+
+    const withoutTurn = createInitialTuiState({ room: "demo", reconnectSocket: false }, false)
+    withoutTurn.snapshot = state.snapshot
+    view = renderer.render(renderTuiView(withoutTurn, createNoopTuiActions()))
+    const disabledShareAll = view.findById("share-turn-all-peers")
+    const disabledPeerShare = view.findById("peer-share-turn-p1")
+    expect(disabledShareAll === null || disabledPeerShare === null).toBe(false)
+    if (!disabledShareAll || !disabledPeerShare) throw new Error("missing disabled TURN share buttons")
+    expect(disabledShareAll.props.disabled).toBe(undefined)
+    expect(disabledPeerShare.props.disabled).toBe(undefined)
+    expect(disabledShareAll.props.focusable).toBe(false)
+    expect(disabledPeerShare.props.focusable).toBe(false)
   })
 
   test("hides the events card by default and shows it when enabled", () => {

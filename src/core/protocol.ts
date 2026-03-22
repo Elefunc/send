@@ -1,4 +1,4 @@
-import type { RTCIceCandidateInit, RTCSessionDescriptionInit } from "werift"
+import type { RTCIceCandidateInit, RTCIceServer, RTCSessionDescriptionInit } from "werift"
 
 export const SIGNAL_WS_URL = "wss://sig.efn.kr/ws"
 export const BASE_ICE_SERVERS = [
@@ -59,6 +59,7 @@ export interface SignalEnvelope {
   from: string
   to: string
   at: string
+  instanceId?: string
 }
 
 export interface HelloSignal extends SignalEnvelope {
@@ -68,6 +69,7 @@ export interface HelloSignal extends SignalEnvelope {
   profile?: PeerProfile
   rtcEpoch?: number
   reply?: boolean
+  recovery?: boolean
 }
 
 export interface NameSignal extends SignalEnvelope {
@@ -105,6 +107,11 @@ export interface CandidateSignal extends SignalEnvelope {
   candidate: RTCIceCandidateInit
 }
 
+export interface TurnShareSignal extends SignalEnvelope {
+  kind: "turn-share"
+  iceServers: RTCIceServer[]
+}
+
 export type SignalMessage =
   | HelloSignal
   | NameSignal
@@ -112,6 +119,7 @@ export type SignalMessage =
   | ByeSignal
   | DescriptionSignal
   | CandidateSignal
+  | TurnShareSignal
 
 export interface DataEnvelope {
   room: string
@@ -200,6 +208,7 @@ export const cleanText = (value: unknown, max = 72) => `${value ?? ""}`.trim().r
 export const cleanRoom = (value: unknown) => cleanText(value).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || uid(8)
 export const cleanName = (value: unknown) => cleanText(value, 24).toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 24) || fallbackName
 export const cleanLocalId = (value: unknown) => cleanText(value, 24).toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 24) || uid(8)
+export const cleanInstanceId = (value: unknown) => cleanText(value, 24).toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 24)
 export const signalEpoch = (value: unknown) => Number.isSafeInteger(value) && Number(value) > 0 ? Number(value) : 0
 
 export const buildCliProfile = (): PeerProfile => ({

@@ -11,6 +11,7 @@ import {
   SIGNAL_WS_URL,
   buildCliProfile,
   cleanText,
+  cleanInstanceId,
   cleanLocalId,
   cleanName,
   cleanRoom,
@@ -39,6 +40,7 @@ interface PeerState {
   name: string
   presence: Presence
   selected: boolean
+  remoteInstanceId: string
   polite: boolean
   pc: RTCPeerConnection | null
   dc: RTCDataChannel | null
@@ -258,6 +260,16 @@ export const turnUsageState = (
   return "idle"
 }
 
+export class SessionAbortedError extends Error {
+  constructor(message = "session aborted") {
+    super(message)
+    this.name = "SessionAbortedError"
+  }
+}
+
+export const isSessionAbortedError = (error: unknown): error is SessionAbortedError =>
+  error instanceof SessionAbortedError || error instanceof Error && error.name === "SessionAbortedError"
+
 const timeoutSignal = (ms: number, base?: AbortSignal | null) => {
   const timeout = typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(ms) : undefined
   if (!base) return timeout
@@ -317,7 +329,30 @@ const sameConnectivity = (left: PeerConnectivitySnapshot, right: PeerConnectivit
   && left.remoteCandidateType === right.remoteCandidateType
   && left.pathLabel === right.pathLabel
 
-const turnServers = (urls: string[], username?: string, credential?: string): RTCIceServer[] => [...new Set(urls.filter(Boolean))].map(urls => ({ urls, ...(username ? { username } : {}), ...(credential ? { credential } : {}) }))
+const turnServerUrls = (server?: RTCIceServer | null) => (Array.isArray(server?.urls) ? server.urls : [server?.urls]).map(url => `${url ?? ""}`.trim()).filter(url => /^turns?:/i.test(url))
+const normalizeTurnServer = (server?: RTCIceServer | null): RTCIceServer | null => {
+  const urls = [...new Set(turnServerUrls(server))]
+  if (!urls.length) return null
+  const username = `${server?.username ?? ""}`.trim()
+  const credential = `${server?.credential ?? ""}`.trim()
+  return {
+    urls: urls[0],
+    ...(username ? { username } : {}),
+    ...(credential ? { credential } : {}),
+  }
+}
+const turnServerKey = (server?: RTCIceServer | null) => {
+  const normalized = normalizeTurnServer(server)
+  return normalized ? JSON.stringify({
+    urls: turnServerUrls(normalized).sort(),
+    username: `${normalized.username ?? ""}`,
+    credential: `${normalized.credential ?? ""}`,
+  }) : ""
+}
+const turnServers = (urls: string[], username?: string, credential?: string): RTCIceServer[] =>
+  [...new Set(urls.map(url => `${url ?? ""}`.trim()).filter(url => /^turns?:/i.test(url)))]
+    .map(url => normalizeTurnServer({ urls: url, ...(username ? { username } : {}), ...(credential ? { credential } : {}) }))
+    .filter((server): server is RTCIceServer => !!server)
 
 const messageString = async (value: unknown) => {
   if (typeof value === "string") return value
@@ -328,6 +363,7 @@ const messageString = async (value: unknown) => {
 }
 
 export class SendSession {
+  readonly instanceId: string
   readonly localId: string
   profile = sanitizeProfile(buildCliProfile())
   readonly saveDir: string
@@ -340,7 +376,8 @@ export class SendSession {
   private autoAcceptIncoming: boolean
   private autoSaveIncoming: boolean
   private readonly reconnectSocket: boolean
-  private readonly iceServers: RTCIceServer[]
+  private iceServers: RTCIceServer[]
+  private extraTurnServers: RTCIceServer[]
   private readonly peerSelectionMemory: Map<string, boolean>
   private readonly peers = new Map<string, PeerState>()
   private readonly transfers = new Map<string, TransferState>()
@@ -353,10 +390,12 @@ export class SendSession {
   private socketToken = 0
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private peerStatsTimer: ReturnType<typeof setInterval> | null = null
+  private readonly pendingRtcCloses = new Set<Promise<void>>()
   private lifecycleAbortController: AbortController | null = null
   private stopped = false
 
   constructor(config: SessionConfig) {
+    this.instanceId = cleanInstanceId(uid(10)) || uid(10)
     this.localId = cleanLocalId(config.localId)
     this.room = cleanRoom(config.room)
     this.name = cleanName(config.name ?? fallbackName)
@@ -365,9 +404,9 @@ export class SendSession {
     this.autoAcceptIncoming = !!config.autoAcceptIncoming
     this.autoSaveIncoming = !!config.autoSaveIncoming
     this.reconnectSocket = config.reconnectSocket ?? true
-    const extraTurn = turnServers(config.turnUrls ?? [], config.turnUsername, config.turnCredential)
-    this.iceServers = [...BASE_ICE_SERVERS, ...extraTurn]
-    this.turnAvailable = extraTurn.length > 0
+    this.extraTurnServers = turnServers(config.turnUrls ?? [], config.turnUsername, config.turnCredential)
+    this.iceServers = [...BASE_ICE_SERVERS, ...this.extraTurnServers]
+    this.turnAvailable = this.extraTurnServers.length > 0
   }
 
   subscribe(listener: () => void) {
@@ -409,7 +448,7 @@ export class SendSession {
     void this.loadLocalProfile()
     void this.probePulse()
     this.connectSocket()
-    await this.waitFor(() => this.socketState === "open", timeoutMs)
+    await this.waitFor(() => this.socketState === "open", timeoutMs, this.lifecycleAbortController?.signal)
   }
 
   async close() {
@@ -426,6 +465,7 @@ export class SendSession {
     if (socket) try { socket.close(1000, "normal") } catch {}
     for (const peer of this.peers.values()) this.destroyPeer(peer, "session-close")
     this.notify()
+    if (this.pendingRtcCloses.size) await Promise.allSettled([...this.pendingRtcCloses])
   }
 
   activePeers() {
@@ -438,6 +478,26 @@ export class SendSession {
 
   selectedReadyPeers() {
     return this.readyPeers().filter(peer => peer.selected)
+  }
+
+  canShareTurn() {
+    return this.extraTurnServers.length > 0
+  }
+
+  shareTurnWithPeer(peerId: string) {
+    const peer = this.peers.get(peerId)
+    if (!peer || peer.presence !== "active" || !this.extraTurnServers.length) return false
+    const sent = this.sendSignal({ kind: "turn-share", to: peer.id, iceServers: this.sharedTurnServers() })
+    if (sent) this.pushLog("turn:share-sent", { peer: peer.id, scope: "peer" }, "info")
+    return sent
+  }
+
+  shareTurnWithAllPeers() {
+    const count = this.activePeers().length
+    if (!count || !this.extraTurnServers.length) return 0
+    const sent = this.sendSignal({ kind: "turn-share", to: "*", iceServers: this.sharedTurnServers() })
+    if (sent) this.pushLog("turn:share-sent", { peers: count, scope: "all" }, "info")
+    return sent ? count : 0
   }
 
   setPeerSelected(peerId: string, selected: boolean) {
@@ -456,6 +516,32 @@ export class SendSession {
   togglePeerSelection(peerId: string) {
     const peer = this.peers.get(peerId)
     return peer ? this.setPeerSelected(peerId, !peer.selected) : false
+  }
+
+  private sharedTurnServers() {
+    return this.extraTurnServers.map(server => normalizeTurnServer(server)).filter((server): server is RTCIceServer => !!server)
+  }
+
+  private refreshIceServers() {
+    this.turnAvailable = this.extraTurnServers.length > 0
+    this.iceServers = [...BASE_ICE_SERVERS, ...this.extraTurnServers]
+  }
+
+  private mergeTurnServers(iceServers: RTCIceServer[] = []) {
+    const known = new Set(this.extraTurnServers.map(turnServerKey).filter(Boolean))
+    const added: RTCIceServer[] = []
+    for (const server of iceServers) {
+      const normalized = normalizeTurnServer(server)
+      if (!normalized) continue
+      const key = turnServerKey(normalized)
+      if (!key || known.has(key)) continue
+      known.add(key)
+      added.push(normalized)
+    }
+    if (!added.length) return 0
+    this.extraTurnServers = [...this.extraTurnServers, ...added]
+    this.refreshIceServers()
+    return added.length
   }
 
   clearLogs() {
@@ -653,19 +739,31 @@ export class SendSession {
     return this.transfers.get(transferId)
   }
 
-  async waitFor(predicate: () => boolean, timeoutMs: number) {
+  async waitFor(predicate: () => boolean, timeoutMs: number, signal?: AbortSignal | null) {
     if (predicate()) return
+    if (signal?.aborted) throw new SessionAbortedError()
     await new Promise<void>((resolveWait, rejectWait) => {
-      const timeout = setTimeout(() => {
+      let unsubscribe = () => {}
+      const cleanup = () => {
+        clearTimeout(timeout)
+        signal?.removeEventListener("abort", onAbort)
         unsubscribe()
+      }
+      const onAbort = () => {
+        cleanup()
+        rejectWait(new SessionAbortedError())
+      }
+      const timeout = setTimeout(() => {
+        cleanup()
         rejectWait(new Error(`timed out after ${timeoutMs}ms`))
       }, timeoutMs)
-      const unsubscribe = this.subscribe(() => {
+      unsubscribe = this.subscribe(() => {
         if (!predicate()) return
-        clearTimeout(timeout)
-        unsubscribe()
+        cleanup()
         resolveWait()
       })
+      signal?.addEventListener("abort", onAbort, { once: true })
+      if (signal?.aborted) onAbort()
     })
   }
 
@@ -933,7 +1031,7 @@ export class SendSession {
 
   private sendSignal(payload: { kind: string; to?: string; [key: string]: unknown }) {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return false
-    const message = { room: this.room, from: this.localId, to: "*", at: stamp(), ...payload }
+    const message = { room: this.room, from: this.localId, to: "*", at: stamp(), instanceId: this.instanceId, ...payload }
     this.socket.send(JSON.stringify(message))
     this.pushLog("signal:out", message)
     return true
@@ -967,12 +1065,13 @@ export class SendSession {
     return previous !== next
   }
 
-  private buildPeer(remoteId: string) {
+  private buildPeer(remoteId: string, remoteInstanceId = "") {
     const peer: PeerState = {
       id: remoteId,
       name: fallbackName,
       presence: "active",
       selected: this.peerSelected(remoteId),
+      remoteInstanceId: cleanInstanceId(remoteInstanceId),
       polite: this.localId > remoteId,
       pc: null,
       dc: null,
@@ -996,16 +1095,42 @@ export class SendSession {
     return peer
   }
 
-  private syncPeerPresence(remoteId: string, name?: string, profile?: PeerProfile, turnAvailable?: boolean) {
-    const peer = this.peers.get(remoteId) ?? this.buildPeer(remoteId)
+  private resetPeerInstance(peer: PeerState, remoteInstanceId: string) {
+    peer.remoteInstanceId = remoteInstanceId
+    peer.remoteEpoch = 0
+    peer.selected = this.peerSelected(peer.id)
+    peer.presence = "active"
+    peer.terminalReason = ""
+    peer.lastError = ""
+    peer.turnAvailable = false
+    peer.connectivity = emptyConnectivitySnapshot()
+    this.failPeerTransfers(peer, "peer-restarted")
+    this.closePeerRTC(peer)
+    this.pushLog("peer:instance-replaced", { peer: peer.id, instanceId: remoteInstanceId })
+  }
+
+  private acceptPeerInstance(peer: PeerState, remoteInstanceId: unknown, kind: string) {
+    const nextInstanceId = cleanInstanceId(remoteInstanceId)
+    if (!nextInstanceId) return true
+    if (!peer.remoteInstanceId) {
+      peer.remoteInstanceId = nextInstanceId
+      return true
+    }
+    if (peer.remoteInstanceId === nextInstanceId) return true
+    if (kind !== "hello") return false
+    this.resetPeerInstance(peer, nextInstanceId)
+    return true
+  }
+
+  private syncPeerPresence(peer: PeerState, name?: string, profile?: PeerProfile, turnAvailable?: boolean) {
     const wasTerminal = peer.presence === "terminal"
     peer.lastSeenAt = Date.now()
     peer.presence = "active"
     peer.terminalReason = ""
-    if (wasTerminal) peer.selected = this.peerSelected(remoteId)
+    if (wasTerminal) peer.selected = this.peerSelected(peer.id)
     if (name != null) {
       peer.name = cleanName(name)
-      for (const transfer of this.transfers.values()) if (transfer.peerId === remoteId) transfer.peerName = peer.name
+      for (const transfer of this.transfers.values()) if (transfer.peerId === peer.id) transfer.peerName = peer.name
     }
     if (typeof turnAvailable === "boolean") peer.turnAvailable = turnAvailable
     if (profile) peer.profile = sanitizeProfile(profile)
@@ -1013,12 +1138,19 @@ export class SendSession {
     return peer
   }
 
-  private syncPeerSignal(peer: PeerState, kind: string, remoteEpoch = 0) {
+  private syncPeerSignal(peer: PeerState, kind: string, remoteEpoch = 0, recovery = false) {
     const epoch = signalEpoch(remoteEpoch)
     if (epoch && epoch < peer.remoteEpoch) return null
     if (epoch) peer.remoteEpoch = epoch
-    if (kind !== "bye" && (!peer.pc || peer.pc.connectionState === "closed" || peer.dc?.readyState === "closed")) this.ensurePeerConnection(peer, `signal:${kind}`)
+    if (kind !== "bye" && (recovery || !peer.pc || peer.pc.connectionState === "closed" || peer.dc?.readyState === "closed")) this.ensurePeerConnection(peer, `signal:${kind}`)
     return peer
+  }
+
+  private restartPeerConnection(peer: PeerState, reason: string, announceRecovery = false) {
+    this.ensurePeerConnection(peer, reason)
+    if (announceRecovery) this.sendPeerHello(peer, { recovery: true })
+    this.emit({ type: "peer", peer: this.peerSnapshot(peer) })
+    this.notify()
   }
 
   private ensurePeerConnection(peer: PeerState, reason: string) {
@@ -1110,13 +1242,34 @@ export class SendSession {
     channel.onmessage = ({ data }) => void this.onDataMessage(peer, data)
   }
 
+  private trackRtcClose(closeTask: Promise<void> | null | undefined) {
+    if (!closeTask) return
+    const task = closeTask.catch(() => {}).finally(() => {
+      this.pendingRtcCloses.delete(task)
+    })
+    this.pendingRtcCloses.add(task)
+  }
+
   private closePeerRTC(peer: PeerState) {
     const dc = peer.dc
     const pc = peer.pc
     peer.dc = null
     peer.pc = null
+    if (dc) {
+      ;(dc as any).onopen = null
+      ;(dc as any).onclose = null
+      ;(dc as any).onerror = null
+      ;(dc as any).onmessage = null
+    }
+    if (pc) {
+      ;(pc as any).onicecandidate = null
+      ;(pc as any).ondatachannel = null
+      ;(pc as any).onnegotiationneeded = null
+      ;(pc as any).onconnectionstatechange = null
+      ;(pc as any).oniceconnectionstatechange = null
+    }
     try { dc?.close() } catch {}
-    void pc?.close().catch(() => {})
+    this.trackRtcClose(pc ? Promise.resolve().then(() => pc.close()) : null)
   }
 
   private failPeerTransfers(peer: PeerState, reason: string) {
@@ -1136,26 +1289,42 @@ export class SendSession {
     const message = JSON.parse(raw) as SignalMessage
     if (message.room !== this.room || message.from === this.localId || (message.to && message.to !== "*" && message.to !== this.localId)) return
     this.pushLog("signal:in", message)
+    const peer = this.peers.get(message.from) ?? (message.kind === "bye" ? null : this.buildPeer(message.from, message.instanceId))
+    if (peer && !this.acceptPeerInstance(peer, message.instanceId, message.kind)) return
 
     if (message.kind === "hello") {
-      const peer = this.syncPeerSignal(this.syncPeerPresence(message.from, message.name, message.profile, message.turnAvailable), "hello", message.rtcEpoch)
-      if (peer && !message.reply) this.sendPeerHello(peer, { reply: true })
+      if (!peer) return
+      const synced = this.syncPeerSignal(this.syncPeerPresence(peer, message.name, message.profile, message.turnAvailable), "hello", message.rtcEpoch, !!message.recovery)
+      if (synced && !message.reply) this.sendPeerHello(synced, { reply: true })
       this.notify()
       return
     }
     if (message.kind === "name") {
-      this.syncPeerPresence(message.from, message.name)
+      if (!peer) return
+      this.syncPeerPresence(peer, message.name)
       this.notify()
       return
     }
     if (message.kind === "profile") {
-      this.syncPeerSignal(this.syncPeerPresence(message.from, message.name, message.profile, message.turnAvailable), "profile", message.rtcEpoch)
+      if (!peer) return
+      this.syncPeerSignal(this.syncPeerPresence(peer, message.name, message.profile, message.turnAvailable), "profile", message.rtcEpoch)
       this.notify()
       return
     }
     if (message.kind === "bye") {
-      const peer = this.peers.get(message.from)
       if (peer) this.destroyPeer(peer, "peer-left")
+      this.notify()
+      return
+    }
+    if (message.kind === "turn-share") {
+      if (!peer) return
+      this.syncPeerPresence(peer)
+      const added = this.mergeTurnServers(message.iceServers)
+      if (added) {
+        this.pushLog("turn:share-applied", { peer: peer.id, added }, "info")
+        this.broadcastProfile()
+        this.restartPeerConnection(peer, "turn-share", true)
+      }
       this.notify()
       return
     }
@@ -1170,7 +1339,9 @@ export class SendSession {
   }
 
   private async onDescriptionSignal(message: DescriptionSignal) {
-    const peer = this.syncPeerSignal(this.syncPeerPresence(message.from, message.name, message.profile, message.turnAvailable), "description", message.rtcEpoch)
+    const existing = this.peers.get(message.from) ?? this.buildPeer(message.from, message.instanceId)
+    if (!this.acceptPeerInstance(existing, message.instanceId, message.kind)) return
+    const peer = this.syncPeerSignal(this.syncPeerPresence(existing, message.name, message.profile, message.turnAvailable), "description", message.rtcEpoch)
     if (!peer?.pc) return
     const offerCollision = message.description.type === "offer" && !peer.makingOffer && peer.pc.signalingState !== "stable"
     if (!peer.polite && offerCollision) return
@@ -1190,7 +1361,9 @@ export class SendSession {
   }
 
   private async onCandidateSignal(message: CandidateSignal) {
-    const peer = this.syncPeerSignal(this.syncPeerPresence(message.from, message.name, message.profile, message.turnAvailable), "candidate", message.rtcEpoch)
+    const existing = this.peers.get(message.from) ?? this.buildPeer(message.from, message.instanceId)
+    if (!this.acceptPeerInstance(existing, message.instanceId, message.kind)) return
+    const peer = this.syncPeerSignal(this.syncPeerPresence(existing, message.name, message.profile, message.turnAvailable), "candidate", message.rtcEpoch)
     if (!peer?.pc) return
     try {
       await peer.pc.addIceCandidate(message.candidate as RTCIceCandidateInit)

@@ -1,7 +1,7 @@
 import { rgb, ui, type BadgeVariant, type VNode } from "@rezi-ui/core"
 import { createNodeApp } from "@rezi-ui/node"
 import { inspectLocalFile } from "../core/files"
-import { SendSession, type PeerSnapshot, type SessionConfig, type SessionSnapshot, type TransferSnapshot } from "../core/session"
+import { isSessionAbortedError, SendSession, type PeerSnapshot, type SessionConfig, type SessionSnapshot, type TransferSnapshot } from "../core/session"
 import { cleanLocalId, cleanName, cleanRoom, displayPeerName, fallbackName, formatBytes, type LogEntry, peerDefaultsToken, type PeerProfile, uid } from "../core/protocol"
 import { FILE_SEARCH_VISIBLE_ROWS, type FileSearchEvent, type FileSearchMatch, type FileSearchRequest } from "./file-search-protocol"
 import { deriveFileSearchScope, formatFileSearchDisplayPath, normalizeSearchQuery, offsetFileSearchMatchIndices } from "./file-search"
@@ -76,6 +76,8 @@ export interface TuiActions {
   clearPeerSelection: TuiAction
   toggleHideTerminalPeers: TuiAction
   togglePeer: (peerId: string) => void
+  shareTurnWithPeer: (peerId: string) => void
+  shareTurnWithAllPeers: TuiAction
   toggleAutoOffer: TuiAction
   toggleAutoAccept: TuiAction
   toggleAutoSave: TuiAction
@@ -98,6 +100,8 @@ const NAME_INPUT_ID = "name-input"
 const DRAFT_INPUT_ID = "draft-input"
 const TRANSPARENT_BORDER_STYLE = { fg: rgb(7, 10, 12) } as const
 const METRIC_BORDER_STYLE = { fg: rgb(20, 25, 32) } as const
+const PRIMARY_TEXT_STYLE = { fg: rgb(255, 255, 255) } as const
+const HEADING_TEXT_STYLE = { fg: rgb(255, 255, 255), bold: true } as const
 const DEFAULT_WEB_URL = "https://send.rt.ht/"
 const TRANSFER_DIRECTION_ARROW = {
   out: { glyph: "↗", style: { fg: rgb(170, 217, 76), bold: true } },
@@ -151,6 +155,8 @@ export const createNoopTuiActions = (): TuiActions => ({
   clearPeerSelection: noop,
   toggleHideTerminalPeers: noop,
   togglePeer: noop,
+  shareTurnWithPeer: noop,
+  shareTurnWithAllPeers: noop,
   toggleAutoOffer: noop,
   toggleAutoAccept: noop,
   toggleAutoSave: noop,
@@ -519,6 +525,32 @@ const ghostButton = (id: string, label: string, onPress?: TuiAction, options: { 
   dsVariant: "ghost",
 })
 
+const TEXT_BUTTON_FOCUS_CONFIG = { indicator: "none", showHint: false } as const
+
+const textButton = (id: string, label: string, onPress?: TuiAction, options: { focusable?: boolean; accessibleLabel?: string } = {}) => ui.button({
+  id,
+  label,
+  ...(onPress === undefined ? {} : { onPress }),
+  ...(options.focusable === undefined ? {} : { focusable: options.focusable }),
+  ...(options.accessibleLabel === undefined ? {} : { accessibleLabel: options.accessibleLabel }),
+  px: 0,
+  dsVariant: "ghost",
+  style: PRIMARY_TEXT_STYLE,
+  focusConfig: TEXT_BUTTON_FOCUS_CONFIG,
+})
+
+const headingTextButton = (id: string, label: string, onPress?: TuiAction, options: { focusable?: boolean; accessibleLabel?: string } = {}) => ui.button({
+  id,
+  label,
+  ...(onPress === undefined ? {} : { onPress }),
+  ...(options.focusable === undefined ? {} : { focusable: options.focusable }),
+  ...(options.accessibleLabel === undefined ? {} : { accessibleLabel: options.accessibleLabel }),
+  px: 0,
+  dsVariant: "ghost",
+  style: HEADING_TEXT_STYLE,
+  focusConfig: TEXT_BUTTON_FOCUS_CONFIG,
+})
+
 const denseSection = (options: DenseSectionOptions, children: readonly DenseSectionChild[]) => ui.box({
   ...(options.id === undefined ? {} : { id: options.id }),
   ...(options.key === undefined ? {} : { key: options.key }),
@@ -620,7 +652,7 @@ const renderSelfCard = (state: TuiState, actions: TuiActions) => denseSection({
   ]),
 ])
 
-const renderPeerRow = (peer: PeerSnapshot, actions: TuiActions) => denseSection({
+const renderPeerRow = (peer: PeerSnapshot, turnShareEnabled: boolean, actions: TuiActions) => denseSection({
   id: `peer-row-${peer.id}`,
   key: peer.id,
 }, [
@@ -639,9 +671,9 @@ const renderPeerRow = (peer: PeerSnapshot, actions: TuiActions) => denseSection(
         }),
       ]),
       ui.box({ id: `peer-name-slot-${peer.id}`, flex: 1, minWidth: 0, border: "none" }, [
-        ui.text(peer.displayName, {
-          id: `peer-name-text-${peer.id}`,
-          textOverflow: "ellipsis",
+        textButton(`peer-share-turn-${peer.id}`, peer.displayName, turnShareEnabled && peer.presence === "active" ? () => actions.shareTurnWithPeer(peer.id) : undefined, {
+          focusable: turnShareEnabled && peer.presence === "active",
+          accessibleLabel: `share TURN with ${peer.displayName}`,
         }),
       ]),
       ui.row({ id: `peer-status-cluster-${peer.id}`, gap: 1, items: "center" }, [
@@ -671,9 +703,16 @@ const renderPeersCard = (state: TuiState, actions: TuiActions) => {
   const peers = visiblePeers(state.snapshot.peers, state.hideTerminalPeers)
   const activeCount = state.snapshot.peers.filter(peer => peer.presence === "active").length
   const selectedCount = state.snapshot.peers.filter(peer => peer.selectable && peer.selected).length
+  const canShareTurn = state.session.canShareTurn()
   return denseSection({
     id: "peers-card",
-    title: `Peers ${selectedCount}/${activeCount}`,
+    titleNode: ui.row({ id: "peers-title-row", gap: 1, items: "center" }, [
+      headingTextButton("share-turn-all-peers", "Peers", canShareTurn && !!activeCount ? actions.shareTurnWithAllPeers : undefined, {
+        focusable: canShareTurn && !!activeCount,
+        accessibleLabel: "share TURN with all active peers",
+      }),
+      ui.text(`${selectedCount}/${activeCount}`, { id: "peers-count-text", variant: "heading" }),
+    ]),
     flex: 1,
     actions: [
       actionButton("select-ready-peers", "All", actions.toggleSelectReadyPeers),
@@ -683,7 +722,7 @@ const renderPeersCard = (state: TuiState, actions: TuiActions) => {
   }, [
     ui.box({ id: "peers-list", flex: 1, minHeight: 0, overflow: "scroll", border: "none" }, [
       peers.length
-        ? ui.column({ gap: 0 }, peers.map(peer => renderPeerRow(peer, actions)))
+        ? ui.column({ gap: 0 }, peers.map(peer => renderPeerRow(peer, canShareTurn, actions)))
         : ui.empty(`Waiting for peers in ${state.snapshot.room}...`),
     ]),
   ])
@@ -1025,7 +1064,11 @@ export const startTui = async (initialConfig: SessionConfig, showEvents = false)
   const requestStop = () => {
     if (stopping) return
     stopping = true
-    void app.stop()
+    try {
+      process.kill(process.pid, "SIGINT")
+    } catch {
+      void app.stop()
+    }
   }
 
   const resetFilePreview = (overrides: Partial<FilePreviewState> = {}): FilePreviewState => ({
@@ -1219,7 +1262,7 @@ export const startTui = async (initialConfig: SessionConfig, showEvents = false)
     })
     commit(current => current.session === session ? { ...current, snapshot: session.snapshot() } : current)
     void session.connect().catch(error => {
-      if (state.session !== session) return
+      if (state.session !== session || stopping || cleanedUp || isSessionAbortedError(error)) return
       commit(current => withNotice(current, { text: `${error}`, variant: "error" }))
     })
   }
@@ -1322,6 +1365,29 @@ export const startTui = async (initialConfig: SessionConfig, showEvents = false)
     togglePeer: peerId => {
       state.session.togglePeerSelection(peerId)
       maybeOfferDrafts()
+    },
+    shareTurnWithPeer: peerId => {
+      const peer = state.snapshot.peers.find(item => item.id === peerId)
+      const sent = state.session.shareTurnWithPeer(peerId)
+      commit(current => withNotice(current, {
+        text: !state.session.canShareTurn()
+          ? "TURN is not configured."
+          : sent
+            ? `Shared TURN with ${peer?.displayName ?? peerId}.`
+            : `Unable to share TURN with ${peer?.displayName ?? peerId}.`,
+        variant: !state.session.canShareTurn() ? "info" : sent ? "success" : "warning",
+      }))
+    },
+    shareTurnWithAllPeers: () => {
+      const shared = state.session.shareTurnWithAllPeers()
+      commit(current => withNotice(current, {
+        text: !state.session.canShareTurn()
+          ? "TURN is not configured."
+          : shared
+            ? `Shared TURN with ${plural(shared, "active peer")}.`
+            : "No active peers to share TURN with.",
+        variant: !state.session.canShareTurn() ? "info" : shared ? "success" : "info",
+      }))
     },
     toggleAutoOffer: () => {
       commit(current => withNotice({ ...current, autoOfferOutgoing: !current.autoOfferOutgoing }, { text: !state.autoOfferOutgoing ? "Auto-offer on." : "Auto-offer off.", variant: !state.autoOfferOutgoing ? "success" : "warning" }))
@@ -1500,17 +1566,14 @@ export const startTui = async (initialConfig: SessionConfig, showEvents = false)
     await state.session.close()
   }
 
-  const onSignal = () => requestStop()
-  process.once("SIGINT", onSignal)
-  process.once("SIGTERM", onSignal)
-
   try {
     bindSession(state.session)
     await app.run()
   } finally {
-    process.off("SIGINT", onSignal)
-    process.off("SIGTERM", onSignal)
-    await stop()
-    app.dispose()
+    try {
+      await stop()
+    } finally {
+      app.dispose()
+    }
   }
 }
