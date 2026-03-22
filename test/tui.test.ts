@@ -1,6 +1,6 @@
 import { createTestRenderer, rgb, ui } from "@rezi-ui/core"
 import { describe, expect, test } from "bun:test"
-import { clampFilePreviewSelectedIndex, consumeSatisfiedFocusRequest, createInitialTuiState, createNoopTuiActions, deriveBootFocusState, ensureFilePreviewScrollTop, filePreviewVisible, groupTransfersByPeer, moveFilePreviewSelection, renderTuiView, scheduleBootNameJump, transferSummaryStats, visiblePanes, withAcceptedDraftInput } from "../src/tui/app"
+import { clampFilePreviewSelectedIndex, consumeSatisfiedFocusRequest, createInitialTuiState, createNoopTuiActions, deriveBootFocusState, ensureFilePreviewScrollTop, filePreviewVisible, groupTransfersByPeer, moveFilePreviewSelection, renderTuiView, resolveWebUrlBase, scheduleBootNameJump, transferSummaryStats, visiblePanes, webInviteUrl, withAcceptedDraftInput } from "../src/tui/app"
 import type { PeerSnapshot, TransferSnapshot } from "../src/core/session"
 import { fallbackName } from "../src/core/protocol"
 
@@ -15,6 +15,23 @@ const nearestAncestorBox = (view: ReturnType<ReturnType<typeof createWideRendere
   [...view.nodes]
     .filter(candidate => candidate.kind === "box" && candidate.path.length < node.path.length && candidate.path.every((part, index) => part === node.path[index]))
     .sort((left, right) => right.path.length - left.path.length)[0] ?? null
+
+const withEnv = async (values: Record<string, string | undefined>, fn: () => Promise<unknown> | unknown) => {
+  const previous = new Map<string, string | undefined>()
+  for (const [key, value] of Object.entries(values)) {
+    previous.set(key, process.env[key])
+    if (value == null) delete process.env[key]
+    else process.env[key] = value
+  }
+  try {
+    return await fn()
+  } finally {
+    for (const [key, value] of previous) {
+      if (value == null) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+}
 
 describe("TUI pane visibility", () => {
   test("hides the logs pane by default", () => {
@@ -296,13 +313,51 @@ describe("TUI view", () => {
     const state = createInitialTuiState({ room: "demo", name: "alice", reconnectSocket: false }, false)
     const view = renderer.render(renderTuiView(state, createNoopTuiActions()))
     const newRoom = view.findById("new-room")
+    const inviteSlot = view.findById("room-invite-slot")
+    const inviteLink = view.findById("room-invite-link")
     expect(view.findText("Room")).toBe(null)
     expect(view.findText("Signal idle")).toBe(null)
-    expect(newRoom === null).toBe(false)
-    if (!newRoom) throw new Error("missing new-room button")
+    expect(newRoom === null || inviteSlot === null || inviteLink === null).toBe(false)
+    if (!newRoom || !inviteSlot || !inviteLink) throw new Error("missing room row controls")
     expect("label" in newRoom.props && newRoom.props.label).toBe("🏠")
     expect(view.findById("room-input") === null).toBe(false)
-    expect(hasRenderedText(view, "📋")).toBe(false)
+    expect(inviteSlot.kind).toBe("row")
+    expect(inviteSlot.props.width).toBe(newRoom.rect.w)
+    expect(inviteLink.kind).toBe("link")
+    expect(inviteLink.props.label).toBe("📋")
+    expect(inviteLink.props.accessibleLabel).toBe("Open invite link")
+    expect(inviteLink.props.url).toBe("https://send.rt.ht/#room=demo&clean=1&accept=1&offer=1&save=1")
+    expect(inviteLink.rect.x - inviteSlot.rect.x).toBe(inviteSlot.rect.x + inviteSlot.rect.w - (inviteLink.rect.x + inviteLink.rect.w))
+    expect(hasRenderedText(view, "📋")).toBe(true)
+  })
+
+  test("uses the committed state for the room invite link and updates it with current toggles", () => {
+    const renderer = createWideRenderer()
+    const state = createInitialTuiState({ room: "demo", reconnectSocket: false }, false)
+    state.roomInput = "draft-room"
+    state.hideTerminalPeers = false
+    state.autoAcceptIncoming = false
+    state.autoOfferOutgoing = false
+    state.autoSaveIncoming = false
+    const view = renderer.render(renderTuiView(state, createNoopTuiActions()))
+    const inviteLink = view.findById("room-invite-link")
+    expect(inviteLink === null).toBe(false)
+    if (!inviteLink) throw new Error("missing room invite link")
+    expect(inviteLink.props.url).toBe("https://send.rt.ht/#room=demo&clean=0&accept=0&offer=0&save=0")
+  })
+
+  test("uses SEND_WEB_URL for the room invite link base and falls back on invalid values", async () => {
+    await withEnv({ SEND_WEB_URL: "https://example.com/send/" }, () => {
+      const state = createInitialTuiState({ room: "demo", reconnectSocket: false }, false)
+      expect(resolveWebUrlBase()).toBe("https://example.com/send/")
+      expect(webInviteUrl(state)).toBe("https://example.com/send/#room=demo&clean=1&accept=1&offer=1&save=1")
+    })
+
+    await withEnv({ SEND_WEB_URL: "not a valid url" }, () => {
+      const state = createInitialTuiState({ room: "demo", reconnectSocket: false }, false)
+      expect(resolveWebUrlBase()).toBe("https://send.rt.ht/")
+      expect(webInviteUrl(state)).toBe("https://send.rt.ht/#room=demo&clean=1&accept=1&offer=1&save=1")
+    })
   })
 
   test("renders grouped file actions with gaps between Offer, Accept|Save, and Clear", () => {

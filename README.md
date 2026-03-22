@@ -15,15 +15,20 @@ bun add -g @elefunc/send
 ## Usage
 
 ```bash
+send
 send peers
 send offer ./file.txt
 send accept
 send tui --events
 ```
 
+When no subcommand is provided, `send` launches the TUI by default.
+
 ## Rooms
 
 `--room` is optional on all commands. If you omit it, `send` creates a random room and prints or shows it.
+
+In the TUI, the room row includes a `📋` invite link that opens the equivalent web app URL for the current committed room and toggle state. Set `SEND_WEB_URL` to change its base URL; it defaults to `https://send.rt.ht/`.
 
 ## Self Identity
 

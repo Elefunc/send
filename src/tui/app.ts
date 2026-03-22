@@ -97,6 +97,7 @@ const NAME_INPUT_ID = "name-input"
 const DRAFT_INPUT_ID = "draft-input"
 const TRANSPARENT_BORDER_STYLE = { fg: rgb(7, 10, 12) } as const
 const METRIC_BORDER_STYLE = { fg: rgb(20, 25, 32) } as const
+const DEFAULT_WEB_URL = "https://send.rt.ht/"
 
 const countFormat = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 })
 const percentFormat = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 })
@@ -106,6 +107,32 @@ const pluralRules = new Intl.PluralRules()
 export const visiblePanes = (showEvents: boolean): VisiblePane[] => showEvents ? ["peers", "transfers", "logs"] : ["peers", "transfers"]
 
 const noop = () => {}
+
+const hashBool = (value: boolean) => value ? "1" : "0"
+
+export const resolveWebUrlBase = (value = process.env.SEND_WEB_URL) => {
+  const candidate = `${value ?? ""}`.trim() || DEFAULT_WEB_URL
+  try {
+    return new URL(candidate).toString()
+  } catch {
+    return DEFAULT_WEB_URL
+  }
+}
+
+export const webInviteUrl = (
+  state: Pick<TuiState, "snapshot" | "hideTerminalPeers" | "autoAcceptIncoming" | "autoOfferOutgoing" | "autoSaveIncoming">,
+  baseUrl = resolveWebUrlBase(),
+) => {
+  const url = new URL(baseUrl)
+  url.hash = new URLSearchParams({
+    room: cleanRoom(state.snapshot.room),
+    clean: hashBool(state.hideTerminalPeers),
+    accept: hashBool(state.autoAcceptIncoming),
+    offer: hashBool(state.autoOfferOutgoing),
+    save: hashBool(state.autoSaveIncoming),
+  }).toString()
+  return url.toString()
+}
 
 export const createNoopTuiActions = (): TuiActions => ({
   toggleEvents: noop,
@@ -503,6 +530,14 @@ const renderRoomCard = (state: TuiState, actions: TuiActions) => denseSection({
         placeholder: "room",
         onInput: value => actions.setRoomInput(value),
         onBlur: actions.commitRoom,
+      }),
+    ]),
+    ui.row({ id: "room-invite-slot", width: 6, justify: "center", items: "center" }, [
+      ui.link({
+        id: "room-invite-link",
+        label: "📋",
+        accessibleLabel: "Open invite link",
+        url: webInviteUrl(state),
       }),
     ]),
   ]),

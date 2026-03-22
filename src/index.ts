@@ -197,8 +197,23 @@ const tuiCommand = async (options: Record<string, unknown>) => {
   await startTui(initialConfig, !!options.events)
 }
 
-export const createCli = () => {
+type CliHandlers = {
+  peers: typeof peersCommand
+  offer: typeof offerCommand
+  accept: typeof acceptCommand
+  tui: typeof tuiCommand
+}
+
+const defaultCliHandlers: CliHandlers = {
+  peers: peersCommand,
+  offer: offerCommand,
+  accept: acceptCommand,
+  tui: tuiCommand,
+}
+
+export const createCli = (handlers: CliHandlers = defaultCliHandlers) => {
   const cli = cac("send")
+  cli.usage("[command] [options]")
 
   cli
     .command("peers", "list discovered peers")
@@ -210,7 +225,7 @@ export const createCli = () => {
     .option("--turn-url <url>", "custom TURN url, repeat or comma-separate")
     .option("--turn-username <value>", "custom TURN username")
     .option("--turn-credential <value>", "custom TURN credential")
-    .action(peersCommand)
+    .action(handlers.peers)
 
   cli
     .command("offer [...files]", "offer files to browser-compatible peers")
@@ -223,7 +238,7 @@ export const createCli = () => {
     .option("--turn-url <url>", "custom TURN url, repeat or comma-separate")
     .option("--turn-username <value>", "custom TURN username")
     .option("--turn-credential <value>", "custom TURN credential")
-    .action(offerCommand)
+    .action(handlers.offer)
 
   cli
     .command("accept", "receive and save files")
@@ -235,7 +250,7 @@ export const createCli = () => {
     .option("--turn-url <url>", "custom TURN url, repeat or comma-separate")
     .option("--turn-username <value>", "custom TURN username")
     .option("--turn-credential <value>", "custom TURN credential")
-    .action(acceptCommand)
+    .action(handlers.accept)
 
   cli
     .command("tui", "launch the interactive terminal UI")
@@ -246,24 +261,39 @@ export const createCli = () => {
     .option("--turn-url <url>", "custom TURN url, repeat or comma-separate")
     .option("--turn-username <value>", "custom TURN username")
     .option("--turn-credential <value>", "custom TURN credential")
-    .action(tuiCommand)
+    .action(handlers.tui)
 
-  cli.help()
+  cli.help(sections => {
+    const usage = sections.find(section => section.title === "Usage:")
+    if (usage) usage.body = "  $ send [command] [options]"
+    const moreInfoIndex = sections.findIndex(section => section.title?.startsWith("For more info"))
+    const defaultSection = {
+      title: "Default",
+      body: "  send with no command launches the terminal UI (same as `send tui`).",
+    }
+    if (moreInfoIndex < 0) sections.push(defaultSection)
+    else sections.splice(moreInfoIndex, 0, defaultSection)
+  })
 
   return cli
 }
 
-const ensureKnownCommand = (cli: CAC, argv: string[]) => {
+const explicitCommand = (cli: CAC, argv: string[]) => {
   const command = argv[2]
-  if (!command || command.startsWith("-")) return
-  if (cli.commands.some(entry => entry.isMatched(command))) return
+  if (!command || command.startsWith("-")) return undefined
+  if (cli.commands.some(entry => entry.isMatched(command))) return command
   throw new ExitError(`Unknown command \`${command}\``, 1)
 }
 
-export const runCli = async (argv = process.argv) => {
-  const cli = createCli()
-  ensureKnownCommand(cli, argv)
-  cli.parse(argv, { run: false })
+export const runCli = async (argv = process.argv, handlers: CliHandlers = defaultCliHandlers) => {
+  const cli = createCli(handlers)
+  const command = explicitCommand(cli, argv)
+  const parsed = cli.parse(argv, { run: false }) as { options: Record<string, unknown> }
+  const helpRequested = !!parsed.options.help || !!parsed.options.h
+  if (!command && !helpRequested) {
+    await handlers.tui(parsed.options)
+    return
+  }
   await cli.runMatchedCommand()
 }
 

@@ -56,6 +56,19 @@ const withEnv = async (values: Record<string, string | undefined>, fn: () => Pro
   }
 }
 
+const createHandlerSpies = () => {
+  const calls: Array<{ name: "peers" | "offer" | "accept" | "tui"; args: unknown[] }> = []
+  return {
+    calls,
+    handlers: {
+      peers: async (options: Record<string, unknown>) => void calls.push({ name: "peers", args: [options] }),
+      offer: async (files: string[], options: Record<string, unknown>) => void calls.push({ name: "offer", args: [files, options] }),
+      accept: async (options: Record<string, unknown>) => void calls.push({ name: "accept", args: [options] }),
+      tui: async (options: Record<string, unknown>) => void calls.push({ name: "tui", args: [options] }),
+    },
+  }
+}
+
 describe("CLI surface", () => {
   test("session config generates a random room when none is provided", () => {
     const config = sessionConfigFrom({}, {})
@@ -171,6 +184,8 @@ describe("CLI surface", () => {
 
   test("global help lists accept and removes receive", async () => {
     const output = await captureConsole(() => runCli(["bun", "send", "--help"]))
+    expect(output).toContain("Usage:\n  $ send [command] [options]")
+    expect(output).toContain("Default:\n  send with no command launches the terminal UI (same as `send tui`).")
     expect(output).toContain("  accept            receive and save files")
     expect(output.includes("  receive           receive and save files")).toBe(false)
     expect(output.includes("$ send receive --help")).toBe(false)
@@ -181,10 +196,44 @@ describe("CLI surface", () => {
     expect(output).toContain("Usage:\n  $ send accept")
   })
 
+  test("defaults bare send to the tui command", async () => {
+    const { calls, handlers } = createHandlerSpies()
+    await runCli(["bun", "send"], handlers)
+    expect(calls).toEqual([{ name: "tui", args: [{ "--": [] }] }])
+  })
+
+  test("defaults no-subcommand option-only invocations to tui", async () => {
+    const { calls, handlers } = createHandlerSpies()
+    await runCli(["bun", "send", "--room", "demo", "--events", "--to", "peer", "--bogus"], handlers)
+    expect(calls.length).toBe(1)
+    expect(calls[0]?.name).toBe("tui")
+    expect(calls[0]?.args[0]).toEqual({
+      "--": [],
+      room: "demo",
+      events: true,
+      to: "peer",
+      bogus: true,
+    })
+  })
+
+  test("top-level help does not default to tui", async () => {
+    const { calls, handlers } = createHandlerSpies()
+    const output = await captureConsole(() => runCli(["bun", "send", "--help"], handlers))
+    expect(output).toContain("Usage:\n  $ send [command] [options]")
+    expect(output).toContain("Default:\n  send with no command launches the terminal UI (same as `send tui`).")
+    expect(calls).toEqual([])
+  })
+
   test("CLI parsing accepts the attached --self=-ID form", () => {
     const cli = createCli()
     const parsed = cli.parse(["bun", "send", "peers", "--self=-ab12cd34"], { run: false }) as { options: Record<string, unknown> }
     expect(parsed.options.self).toBe("-ab12cd34")
+  })
+
+  test("explicit subcommands still dispatch their own handlers", async () => {
+    const { calls, handlers } = createHandlerSpies()
+    await runCli(["bun", "send", "peers", "--wait", "1"], handlers)
+    expect(calls).toEqual([{ name: "peers", args: [{ "--": [], wait: 1 }] }])
   })
 
   test("receive is rejected as an unknown command", async () => {
