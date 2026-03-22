@@ -1189,6 +1189,70 @@ describe("TUI view", () => {
     expect(view.findById("failed-card")).toBe(null)
   })
 
+  test("renders colored diagonal transfer direction arrows and title-line status badges", () => {
+    const renderer = createWideRenderer()
+    const state = createInitialTuiState({ room: "demo", reconnectSocket: false }, false)
+    state.snapshot = {
+      ...state.snapshot,
+      transfers: [
+        { id: "t1", peerId: "p1", peerName: "alice", direction: "out", status: "complete", name: "one.txt", size: 1024, bytes: 1024, progress: 100, speedText: "1 KB/s", etaText: "—", error: "", createdAt: 1, updatedAt: 2, startedAt: 2, endedAt: 3, savedAt: 0 },
+        { id: "t2", peerId: "p2", peerName: "bob", direction: "in", status: "error", name: "two.txt", size: 2048, bytes: 1024, progress: 50, speedText: "1 KB/s", etaText: "2s", error: "failed", createdAt: 4, updatedAt: 5, startedAt: 5, endedAt: 7, savedAt: 0 },
+      ],
+    }
+    const view = renderer.render(renderTuiView(state, createNoopTuiActions()))
+    const outgoingArrow = view.nodes.find(node => node.kind === "text" && node.text === "↗")
+    const incomingArrow = view.nodes.find(node => node.kind === "text" && node.text === "↙")
+    const outgoingName = view.nodes.find(node => node.kind === "text" && node.text === " one.txt")
+    const incomingName = view.nodes.find(node => node.kind === "text" && node.text === " two.txt")
+    const outgoingTitleRow = view.findById("transfer-title-row-t1")
+    const incomingTitleRow = view.findById("transfer-title-row-t2")
+    const outgoingBadges = view.findById("transfer-badges-t1")
+    const incomingBadges = view.findById("transfer-badges-t2")
+    const outgoingStatus = view.nodes.find(node => node.kind === "status" && "label" in node.props && node.props.label === "complete")
+    const incomingStatus = view.nodes.find(node => node.kind === "status" && "label" in node.props && node.props.label === "error")
+    const incomingErrorTag = view.nodes.find(node => node.kind === "text" && node.text === "error")
+    expect(outgoingArrow === undefined || incomingArrow === undefined).toBe(false)
+    expect(outgoingName === undefined || incomingName === undefined).toBe(false)
+    expect(outgoingTitleRow === null || incomingTitleRow === null || outgoingBadges === null || incomingBadges === null || outgoingStatus === undefined || incomingStatus === undefined || incomingErrorTag === undefined).toBe(false)
+    if (!outgoingArrow || !incomingArrow || !outgoingName || !incomingName || !outgoingTitleRow || !incomingTitleRow || !outgoingBadges || !incomingBadges || !outgoingStatus || !incomingStatus || !incomingErrorTag) throw new Error("missing transfer title nodes")
+    expect(hasRenderedText(view, "→")).toBe(false)
+    expect(hasRenderedText(view, "←")).toBe(false)
+    expect(outgoingArrow.props.style).toEqual({ fg: rgb(170, 217, 76), bold: true })
+    expect(incomingArrow.props.style).toEqual({ fg: rgb(240, 113, 120), bold: true })
+    expect(outgoingName.props.variant).toBe("heading")
+    expect(incomingName.props.variant).toBe("heading")
+    expect(outgoingStatus.props.status).toBe("online")
+    expect(incomingStatus.props.status).toBe("offline")
+    expect(outgoingBadges.rect.y).toBe(outgoingTitleRow.rect.y)
+    expect(incomingBadges.rect.y).toBe(incomingTitleRow.rect.y)
+    expect(outgoingStatus.rect.y).toBe(outgoingName.rect.y)
+    expect(incomingStatus.rect.y).toBe(incomingName.rect.y)
+    expect(incomingErrorTag.rect.y).toBe(incomingName.rect.y)
+  })
+
+  test("maps waiting transfer statuses to busy ui.status badges in the title row", () => {
+    const renderer = createWideRenderer()
+    const state = createInitialTuiState({ room: "demo", reconnectSocket: false }, false)
+    state.snapshot = {
+      ...state.snapshot,
+      transfers: [
+        { id: "t1", peerId: "p1", peerName: "alice", direction: "out", status: "queued", name: "one.txt", size: 1024, bytes: 0, progress: 0, speedText: "—", etaText: "—", error: "", createdAt: 1, updatedAt: 1, startedAt: 0, endedAt: 0, savedAt: 0 },
+        { id: "t2", peerId: "p2", peerName: "bob", direction: "in", status: "pending", name: "two.txt", size: 2048, bytes: 0, progress: 0, speedText: "—", etaText: "—", error: "", createdAt: 2, updatedAt: 2, startedAt: 0, endedAt: 0, savedAt: 0 },
+      ],
+    }
+    const view = renderer.render(renderTuiView(state, createNoopTuiActions()))
+    const queuedStatus = view.nodes.find(node => node.kind === "status" && "label" in node.props && node.props.label === "queued")
+    const pendingStatus = view.nodes.find(node => node.kind === "status" && "label" in node.props && node.props.label === "pending")
+    const queuedName = view.nodes.find(node => node.kind === "text" && node.text === " one.txt")
+    const pendingName = view.nodes.find(node => node.kind === "text" && node.text === " two.txt")
+    expect(queuedStatus === undefined || pendingStatus === undefined || queuedName === undefined || pendingName === undefined).toBe(false)
+    if (!queuedStatus || !pendingStatus || !queuedName || !pendingName) throw new Error("missing waiting transfer status nodes")
+    expect(queuedStatus.props.status).toBe("busy")
+    expect(pendingStatus.props.status).toBe("busy")
+    expect(queuedStatus.rect.y).toBe(queuedName.rect.y)
+    expect(pendingStatus.rect.y).toBe(pendingName.rect.y)
+  })
+
   test("renders a Pending header Cancel button for outgoing queued or offered transfers", () => {
     const renderer = createWideRenderer()
     const state = createInitialTuiState({ room: "demo", reconnectSocket: false }, false)

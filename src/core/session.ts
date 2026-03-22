@@ -157,6 +157,7 @@ export interface SessionConfig {
   localId?: string
   name?: string
   saveDir?: string
+  peerSelectionMemory?: Map<string, boolean>
   autoAcceptIncoming?: boolean
   autoSaveIncoming?: boolean
   turnUrls?: string[]
@@ -257,7 +258,12 @@ export const turnUsageState = (
   return "idle"
 }
 
-const timeoutSignal = (ms: number) => typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(ms) : undefined
+const timeoutSignal = (ms: number, base?: AbortSignal | null) => {
+  const timeout = typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(ms) : undefined
+  if (!base) return timeout
+  if (!timeout) return base
+  return typeof AbortSignal.any === "function" ? AbortSignal.any([base, timeout]) : base
+}
 
 const normalizeCandidateType = (value: unknown) => typeof value === "string" ? value.toLowerCase() : ""
 const validCandidateType = (value: string) => ["host", "srflx", "prflx", "relay"].includes(value)
@@ -335,6 +341,7 @@ export class SendSession {
   private autoSaveIncoming: boolean
   private readonly reconnectSocket: boolean
   private readonly iceServers: RTCIceServer[]
+  private readonly peerSelectionMemory: Map<string, boolean>
   private readonly peers = new Map<string, PeerState>()
   private readonly transfers = new Map<string, TransferState>()
   private readonly logs: LogEntry[] = []
@@ -346,6 +353,7 @@ export class SendSession {
   private socketToken = 0
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private peerStatsTimer: ReturnType<typeof setInterval> | null = null
+  private lifecycleAbortController: AbortController | null = null
   private stopped = false
 
   constructor(config: SessionConfig) {
@@ -353,6 +361,7 @@ export class SendSession {
     this.room = cleanRoom(config.room)
     this.name = cleanName(config.name ?? fallbackName)
     this.saveDir = resolve(config.saveDir ?? resolve(process.cwd(), "downloads"))
+    this.peerSelectionMemory = config.peerSelectionMemory ?? new Map()
     this.autoAcceptIncoming = !!config.autoAcceptIncoming
     this.autoSaveIncoming = !!config.autoSaveIncoming
     this.reconnectSocket = config.reconnectSocket ?? true
@@ -394,6 +403,8 @@ export class SendSession {
 
   async connect(timeoutMs = 10_000) {
     this.stopped = false
+    this.lifecycleAbortController?.abort()
+    this.lifecycleAbortController = typeof AbortController === "function" ? new AbortController() : null
     this.startPeerStatsPolling()
     void this.loadLocalProfile()
     void this.probePulse()
@@ -405,6 +416,9 @@ export class SendSession {
     this.stopped = true
     this.stopPeerStatsPolling()
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
+    this.reconnectTimer = null
+    this.lifecycleAbortController?.abort()
+    this.lifecycleAbortController = null
     if (this.socket?.readyState === WebSocket.OPEN) this.sendSignal({ kind: "bye" })
     const socket = this.socket
     this.socket = null
@@ -428,8 +442,12 @@ export class SendSession {
 
   setPeerSelected(peerId: string, selected: boolean) {
     const peer = this.peers.get(peerId)
-    if (!peer || peer.presence !== "active") return false
-    peer.selected = selected
+    if (!peer) return false
+    const next = !!selected
+    const rememberedChanged = this.rememberPeerSelected(peerId, next)
+    if (peer.presence !== "active") return rememberedChanged
+    if (peer.selected === next && !rememberedChanged) return false
+    peer.selected = next
     this.emit({ type: "peer", peer: this.peerSnapshot(peer) })
     this.notify()
     return true
@@ -862,13 +880,17 @@ export class SendSession {
 
   private async loadLocalProfile() {
     try {
-      const response = await fetch(PROFILE_URL, { cache: "no-store", signal: timeoutSignal(4000) })
+      const response = await fetch(PROFILE_URL, { cache: "no-store", signal: timeoutSignal(4000, this.lifecycleAbortController?.signal) })
       if (!response.ok) throw new Error(`profile ${response.status}`)
-      this.profile = localProfileFromResponse(await response.json())
+      const data = await response.json()
+      if (this.stopped) return
+      this.profile = localProfileFromResponse(data)
     } catch (error) {
+      if (this.stopped) return
       this.profile = localProfileFromResponse(null, `${error}`)
       this.pushLog("profile:error", { error: `${error}` }, "error")
     }
+    if (this.stopped) return
     this.broadcastProfile()
     this.notify()
   }
@@ -878,13 +900,16 @@ export class SendSession {
     this.pulse = { ...this.pulse, state: "checking", error: "" }
     this.notify()
     try {
-      const response = await fetch(PULSE_URL, { cache: "no-store", signal: timeoutSignal(3500) })
+      const response = await fetch(PULSE_URL, { cache: "no-store", signal: timeoutSignal(3500, this.lifecycleAbortController?.signal) })
       if (!response.ok) throw new Error(`pulse ${response.status}`)
+      if (this.stopped) return
       this.pulse = { state: "open", at: Date.now(), ms: performance.now() - startedAt, error: "" }
     } catch (error) {
+      if (this.stopped) return
       this.pulse = { state: "error", at: Date.now(), ms: 0, error: `${error}` }
       this.pushLog("pulse:error", { error: `${error}` }, "error")
     }
+    if (this.stopped) return
     this.notify()
   }
 
@@ -931,12 +956,23 @@ export class SendSession {
     return !!peer && !!channel && peer.rtcEpoch === rtcEpoch && peer.dc === channel && channel.readyState === "open"
   }
 
+  private peerSelected(peerId: string) {
+    return this.peerSelectionMemory.get(peerId) ?? true
+  }
+
+  private rememberPeerSelected(peerId: string, selected: boolean) {
+    const next = !!selected
+    const previous = this.peerSelectionMemory.get(peerId)
+    this.peerSelectionMemory.set(peerId, next)
+    return previous !== next
+  }
+
   private buildPeer(remoteId: string) {
     const peer: PeerState = {
       id: remoteId,
       name: fallbackName,
       presence: "active",
-      selected: true,
+      selected: this.peerSelected(remoteId),
       polite: this.localId > remoteId,
       pc: null,
       dc: null,
@@ -962,9 +998,11 @@ export class SendSession {
 
   private syncPeerPresence(remoteId: string, name?: string, profile?: PeerProfile, turnAvailable?: boolean) {
     const peer = this.peers.get(remoteId) ?? this.buildPeer(remoteId)
+    const wasTerminal = peer.presence === "terminal"
     peer.lastSeenAt = Date.now()
     peer.presence = "active"
     peer.terminalReason = ""
+    if (wasTerminal) peer.selected = this.peerSelected(remoteId)
     if (name != null) {
       peer.name = cleanName(name)
       for (const transfer of this.transfers.values()) if (transfer.peerId === remoteId) transfer.peerName = peer.name

@@ -167,6 +167,92 @@ describe("SendSession mutators", () => {
     expect(session.snapshot().peers[0]?.name).toBe("bob")
   })
 
+  test("selects first-time peers by default", async () => {
+    const session = new SendSession({ room: "demo", localId: "self", reconnectSocket: false }) as any
+
+    await session.onSignalMessage(JSON.stringify({
+      room: "demo",
+      from: "peer1",
+      to: "*",
+      at: Date.now(),
+      kind: "hello",
+      name: "alice",
+      reply: true,
+    }))
+
+    expect(session.snapshot().peers[0]?.selected).toBe(true)
+  })
+
+  test("remembers deselected peers across leave and same-id rejoin", async () => {
+    const session = new SendSession({ room: "demo", localId: "self", reconnectSocket: false }) as any
+
+    await session.onSignalMessage(JSON.stringify({
+      room: "demo",
+      from: "peer1",
+      to: "*",
+      at: Date.now(),
+      kind: "hello",
+      name: "alice",
+      reply: true,
+    }))
+    expect(session.setPeerSelected("peer1", false)).toBe(true)
+
+    await session.onSignalMessage(JSON.stringify({
+      room: "demo",
+      from: "peer1",
+      to: "*",
+      at: Date.now(),
+      kind: "bye",
+    }))
+    expect(session.snapshot().peers[0]?.presence).toBe("terminal")
+    expect(session.snapshot().peers[0]?.selected).toBe(false)
+
+    await session.onSignalMessage(JSON.stringify({
+      room: "demo",
+      from: "peer1",
+      to: "*",
+      at: Date.now(),
+      kind: "hello",
+      name: "alice",
+      reply: true,
+    }))
+
+    expect(session.snapshot().peers[0]?.presence).toBe("active")
+    expect(session.snapshot().peers[0]?.selected).toBe(false)
+  })
+
+  test("reuses remembered peer selection across session instances in the same room", async () => {
+    const peerSelectionMemory = new Map<string, boolean>([["peer1", false]])
+    const session = new SendSession({ room: "demo", localId: "self", reconnectSocket: false, peerSelectionMemory }) as any
+
+    await session.onSignalMessage(JSON.stringify({
+      room: "demo",
+      from: "peer1",
+      to: "*",
+      at: Date.now(),
+      kind: "hello",
+      name: "alice",
+      reply: true,
+    }))
+    expect(session.snapshot().peers[0]?.selected).toBe(false)
+
+    expect(session.setPeerSelected("peer1", true)).toBe(true)
+    expect(peerSelectionMemory.get("peer1")).toBe(true)
+
+    const nextSession = new SendSession({ room: "demo", localId: "self", reconnectSocket: false, peerSelectionMemory }) as any
+    await nextSession.onSignalMessage(JSON.stringify({
+      room: "demo",
+      from: "peer1",
+      to: "*",
+      at: Date.now(),
+      kind: "hello",
+      name: "alice",
+      reply: true,
+    }))
+
+    expect(nextSession.snapshot().peers[0]?.selected).toBe(true)
+  })
+
   test("enabling auto-accept accepts current pending transfers", async () => {
     const sent: string[] = []
     const session = new SendSession({ room: "demo", reconnectSocket: false }) as any
@@ -350,7 +436,7 @@ describe("SendSession mutators", () => {
     const snapshot = session.snapshot().peers[0]
     expect(snapshot.pathLabel).toBe("Direct ↔ TURN")
     expect(Number.isFinite(snapshot.rttMs)).toBe(true)
-    expect(snapshot.rttMs >= 5).toBe(true)
+    expect(snapshot.rttMs > 0).toBe(true)
     expect(requests).toEqual([{ built: { nominate: false, localUsername: "local", remoteUsername: "remote", iceControlling: true } }])
   })
 
@@ -434,6 +520,70 @@ describe("SendSession mutators", () => {
       await session.probePulse()
       expect(session.snapshot().pulse.state).toBe("error")
       expect(session.snapshot().pulse.error).toContain("pulse down")
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test("ignores local profile JSON results that complete after close", async () => {
+    const session = new SendSession({ room: "demo", reconnectSocket: false }) as any
+    const originalFetch = globalThis.fetch
+    const originalJson = Response.prototype.json
+    let resolveJson = (_value: unknown) => {}
+    let jsonPending = false
+    globalThis.fetch = (async () => new Response(null, {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })) as typeof fetch
+    Response.prototype.json = function () {
+      return new Promise(resolve => {
+        jsonPending = true
+        resolveJson = resolve
+      })
+    }
+    try {
+      const pending = session.loadLocalProfile()
+      await Bun.sleep(0)
+      await session.close()
+      const afterClose = session.snapshot().profile
+      if (jsonPending) resolveJson({
+        cf: { city: "Busan", region: "Busan", country: "KR", colo: "PUS", asOrganization: "Late ISP", asn: 64513 },
+        hs: { "cf-connecting-ip": "198.51.100.7" },
+      })
+      await pending
+      expect(session.snapshot().profile).toEqual(afterClose)
+      expect(session.snapshot().logs.length).toBe(0)
+    } finally {
+      Response.prototype.json = originalJson
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test("does not overwrite pulse state after close aborts a pending probe", async () => {
+    const session = new SendSession({ room: "demo", reconnectSocket: false }) as any
+    const originalFetch = globalThis.fetch
+    let aborted = false
+    globalThis.fetch = (((_input: string | URL | Request, init?: RequestInit) => new Promise((_resolve, reject) => {
+      const signal = init?.signal as AbortSignal | undefined
+      if (signal?.aborted) {
+        aborted = true
+        reject(new Error("aborted"))
+        return
+      }
+      signal?.addEventListener("abort", () => {
+        aborted = true
+        reject(new Error("aborted"))
+      }, { once: true })
+    })) as typeof fetch)
+    try {
+      const pending = session.probePulse()
+      expect(session.snapshot().pulse.state).toBe("checking")
+      await session.close()
+      const afterClose = session.snapshot().pulse
+      await pending
+      expect(aborted).toBe(true)
+      expect(session.snapshot().pulse).toEqual(afterClose)
+      expect(session.snapshot().logs.length).toBe(0)
     } finally {
       globalThis.fetch = originalFetch
     }

@@ -43,6 +43,7 @@ export type VisiblePane = "peers" | "transfers" | "logs"
 export interface TuiState {
   session: SendSession
   sessionSeed: SessionSeed
+  peerSelectionByRoom: Map<string, Map<string, boolean>>
   snapshot: SessionSnapshot
   focusedId: string | null
   roomInput: string
@@ -98,6 +99,10 @@ const DRAFT_INPUT_ID = "draft-input"
 const TRANSPARENT_BORDER_STYLE = { fg: rgb(7, 10, 12) } as const
 const METRIC_BORDER_STYLE = { fg: rgb(20, 25, 32) } as const
 const DEFAULT_WEB_URL = "https://send.rt.ht/"
+const TRANSFER_DIRECTION_ARROW = {
+  out: { glyph: "↗", style: { fg: rgb(170, 217, 76), bold: true } },
+  in: { glyph: "↙", style: { fg: rgb(240, 113, 120), bold: true } },
+} as const
 
 const countFormat = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 })
 const percentFormat = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 })
@@ -179,6 +184,20 @@ const peerConnectionStatusKind = (status: string) => ({
   closed: "offline",
   idle: "unknown",
   new: "unknown",
+}[status] || "unknown") as "online" | "offline" | "away" | "busy" | "unknown"
+const transferStatusKind = (status: TransferSnapshot["status"]) => ({
+  complete: "online",
+  sending: "online",
+  receiving: "online",
+  "awaiting-done": "online",
+  accepted: "busy",
+  queued: "busy",
+  offered: "busy",
+  pending: "busy",
+  cancelling: "busy",
+  rejected: "offline",
+  cancelled: "offline",
+  error: "offline",
 }[status] || "unknown") as "online" | "offline" | "away" | "busy" | "unknown"
 const visiblePeers = (peers: PeerSnapshot[], hideTerminalPeers: boolean) => hideTerminalPeers ? peers.filter(peer => peer.presence === "active") : peers
 const transferProgress = (transfer: TransferSnapshot) => Math.max(0, Math.min(1, transfer.progress / 100))
@@ -298,8 +317,19 @@ const normalizeSessionSeed = (config: SessionConfig): SessionSeed => ({
   room: cleanRoom(config.room),
 })
 
-const makeSession = (seed: SessionSeed, autoAcceptIncoming: boolean, autoSaveIncoming: boolean) => new SendSession({
+const roomPeerSelectionMemory = (peerSelectionByRoom: Map<string, Map<string, boolean>>, room: string) => {
+  const roomKey = cleanRoom(room)
+  let selectionMemory = peerSelectionByRoom.get(roomKey)
+  if (!selectionMemory) {
+    selectionMemory = new Map<string, boolean>()
+    peerSelectionByRoom.set(roomKey, selectionMemory)
+  }
+  return selectionMemory
+}
+
+const makeSession = (seed: SessionSeed, autoAcceptIncoming: boolean, autoSaveIncoming: boolean, peerSelectionMemory: Map<string, boolean>) => new SendSession({
   ...seed,
+  peerSelectionMemory,
   autoAcceptIncoming,
   autoSaveIncoming,
 })
@@ -435,11 +465,13 @@ export const createInitialTuiState = (initialConfig: SessionConfig, showEvents =
   const sessionSeed = normalizeSessionSeed(initialConfig)
   const autoAcceptIncoming = initialConfig.autoAcceptIncoming ?? true
   const autoSaveIncoming = initialConfig.autoSaveIncoming ?? true
-  const session = makeSession(sessionSeed, autoAcceptIncoming, autoSaveIncoming)
+  const peerSelectionByRoom = new Map<string, Map<string, boolean>>()
+  const session = makeSession(sessionSeed, autoAcceptIncoming, autoSaveIncoming, roomPeerSelectionMemory(peerSelectionByRoom, sessionSeed.room))
   const focusState = deriveBootFocusState(sessionSeed.name)
   return {
     session,
     sessionSeed,
+    peerSelectionByRoom,
     snapshot: session.snapshot(),
     focusedId: null,
     roomInput: sessionSeed.room,
@@ -755,6 +787,7 @@ const transferPathLabel = (transfer: TransferSnapshot, peersById: Map<string, Pe
 
 const renderTransferRow = (transfer: TransferSnapshot, peersById: Map<string, PeerSnapshot>, actions: TuiActions, now = Date.now()) => {
   const hasStarted = !!transfer.startedAt
+  const directionArrow = TRANSFER_DIRECTION_ARROW[transfer.direction]
   const facts = [
     renderTransferFact("Size", formatBytes(transfer.size)),
     renderTransferFact("Path", transferPathLabel(transfer, peersById)),
@@ -767,13 +800,18 @@ const renderTransferRow = (transfer: TransferSnapshot, peersById: Map<string, Pe
 
   return denseSection({
     key: transfer.id,
-    title: `${transfer.direction === "out" ? "→" : "←"} ${transfer.name}`,
+    titleNode: ui.row({ id: `transfer-title-row-${transfer.id}`, gap: 1, items: "center", wrap: true }, [
+      ui.row({ id: `transfer-title-main-${transfer.id}`, gap: 0, items: "center", wrap: true }, [
+        ui.text(directionArrow.glyph, { style: directionArrow.style }),
+        ui.text(` ${transfer.name}`, { variant: "heading" }),
+      ]),
+      ui.row({ id: `transfer-badges-${transfer.id}`, gap: 1, items: "center", wrap: true }, [
+        ui.status(transferStatusKind(transfer.status), { label: transfer.status, showLabel: true }),
+        transfer.error ? tightTag("error", { variant: "error", bare: true }) : null,
+      ]),
+    ]),
     actions: transferActionButtons(transfer, actions),
   }, [
-    ui.row({ gap: 1, wrap: true }, [
-      tightTag(transfer.status, { variant: statusVariant(transfer.status), bare: true }),
-      transfer.error ? tightTag("error", { variant: "error", bare: true }) : null,
-    ]),
     ui.row({ gap: 0, wrap: true }, facts),
     ui.progress(transferProgress(transfer), { showPercent: true, label: `${percentFormat.format(transfer.progress)}%` }),
     ui.row({ gap: 0, wrap: true }, [
@@ -1188,12 +1226,13 @@ export const startTui = async (initialConfig: SessionConfig, showEvents = false)
 
   const replaceSession = (nextSeed: SessionSeed, text: string, options: { reseedBootFocus?: boolean } = {}) => {
     const previousSession = state.session
-    const nextSession = makeSession(nextSeed, state.autoAcceptIncoming, state.autoSaveIncoming)
+    const nextSession = makeSession(nextSeed, state.autoAcceptIncoming, state.autoSaveIncoming, roomPeerSelectionMemory(state.peerSelectionByRoom, nextSeed.room))
     stopPreviewSession()
     commit(current => withNotice({
       ...current,
       session: nextSession,
       sessionSeed: nextSeed,
+      peerSelectionByRoom: current.peerSelectionByRoom,
       snapshot: nextSession.snapshot(),
       roomInput: nextSeed.room,
       nameInput: visibleNameInput(nextSeed.name),
@@ -1270,7 +1309,7 @@ export const startTui = async (initialConfig: SessionConfig, showEvents = false)
     setNameInput: value => commit(current => ({ ...current, nameInput: value })),
     toggleSelectReadyPeers: () => {
       let changed = 0
-      for (const peer of state.snapshot.peers) if (peer.presence === "active" && state.session.setPeerSelected(peer.id, peer.ready)) changed += 1
+      for (const peer of state.snapshot.peers) if (state.session.setPeerSelected(peer.id, peer.presence === "active" && peer.ready)) changed += 1
       commit(current => withNotice(current, { text: changed ? "Selected ready peers." : "No ready peers to select.", variant: changed ? "success" : "info" }))
       maybeOfferDrafts()
     },
