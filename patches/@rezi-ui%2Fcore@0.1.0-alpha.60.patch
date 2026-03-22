@@ -1,5 +1,5 @@
 diff --git a/dist/layout/engine/intrinsic.js b/dist/layout/engine/intrinsic.js
-index 8df3d41f7adcb8d7f151438a8e00fb356d423c1a..53f1247260606044ae209ba18545a1bffc0b90bf 100644
+index 8df3d41..d29496d 100644
 --- a/dist/layout/engine/intrinsic.js
 +++ b/dist/layout/engine/intrinsic.js
 @@ -168,7 +168,7 @@ function measureLeafMaxContent(vnode, axis, measureNode) {
@@ -11,8 +11,15 @@ index 8df3d41f7adcb8d7f151438a8e00fb356d423c1a..53f1247260606044ae209ba18545a1bf
          }
          case "progress": {
              const props = vnode.props;
+@@ -388,4 +388,4 @@ export function measureMaxContent(vnode, axis, measureNode) {
+             return measureLeafMaxContent(vnode, axis, measureNode);
+     }
+ }
+-//# sourceMappingURL=intrinsic.js.map
+\ No newline at end of file
++//# sourceMappingURL=intrinsic.js.map
 diff --git a/dist/layout/kinds/leaf.js b/dist/layout/kinds/leaf.js
-index 255750af2c6fd4cf9c3dac5f7d16580b2ceded65..56820be0fa504a75e4b55aa10132260d84cbed24 100644
+index 255750a..4daf5da 100644
 --- a/dist/layout/kinds/leaf.js
 +++ b/dist/layout/kinds/leaf.js
 @@ -71,7 +71,7 @@ export function measureLeaf(vnode, maxW, maxH, axis) {
@@ -24,24 +31,29 @@ index 255750af2c6fd4cf9c3dac5f7d16580b2ceded65..56820be0fa504a75e4b55aa10132260d
              const h = Math.min(maxH, 1);
              return ok({ w, h });
          }
+@@ -533,4 +533,4 @@ export function layoutLeafKind(vnode, x, y, rectW, rectH) {
+             };
+     }
+ }
+-//# sourceMappingURL=leaf.js.map
+\ No newline at end of file
++//# sourceMappingURL=leaf.js.map
 diff --git a/dist/layout/kinds/box.js b/dist/layout/kinds/box.js
-index 70dcbbac46b492ea42b6c610802ec01982bad1fc..f8560de0b64f2a28762803f0ef4349c9cf0f64b1 100644
+index dca103c..14f2973 100644
 --- a/dist/layout/kinds/box.js
 +++ b/dist/layout/kinds/box.js
 @@ -4,6 +4,7 @@ import { childHasAbsolutePosition } from "../engine/guards.js";
- import { childHasAbsolutePosition } from "../engine/guards.js";
  import { ok } from "../engine/result.js";
  import { resolveMargin as resolveMarginProps, resolveSpacing as resolveSpacingProps, } from "../spacing.js";
  import { validateBoxProps } from "../validateProps.js";
 +const OVERFLOW_CONTENT_LIMIT = 2147483647;
  const syntheticColumnCache = new WeakMap();
  function computeFlowSignature(children) {
-@@ -78,12 +79,13 @@ export function measureBoxKinds(vnode, maxW, maxH, axis, measureNode) {
-             const outerWLimit = forcedW ?? maxWCap;
+     let signature = `${children.length}:`;
+@@ -88,12 +89,13 @@ export function measureBoxKinds(vnode, maxW, maxH, axis, measureNode) {
              const outerHLimit = forcedH ?? maxHCap;
              const cw = clampNonNegative(outerWLimit - bl - br - spacing.left - spacing.right);
--            const ch = clampNonNegative(outerHLimit - bt - bb - spacing.top - spacing.bottom);
-+            const ch = clampNonNegative(outerHLimit - bt - bb - spacing.top - spacing.bottom);
+             const ch = clampNonNegative(outerHLimit - bt - bb - spacing.top - spacing.bottom);
 +            const flowMeasureH = propsRes.value.overflow === "scroll" ? OVERFLOW_CONTENT_LIMIT : ch;
              // Children are laid out as a Column inside the content rect.
              let contentUsedW = 0;
@@ -53,7 +65,7 @@ index 70dcbbac46b492ea42b6c610802ec01982bad1fc..f8560de0b64f2a28762803f0ef4349c9
                  if (!innerRes.ok)
                      return innerRes;
                  contentUsedW = innerRes.value.w;
-@@ -138,10 +140,17 @@ export function layoutBoxKinds(vnode, x, y, rectW, rectH, axis, measureNode, la
+@@ -154,9 +156,16 @@ export function layoutBoxKinds(vnode, x, y, rectW, rectH, axis, measureNode, lay
              const children = [];
              if (vnode.children.length > 0) {
                  const columnNode = getSyntheticColumn(vnode, propsRes.value.gap);
@@ -71,10 +83,18 @@ index 70dcbbac46b492ea42b6c610802ec01982bad1fc..f8560de0b64f2a28762803f0ef4349c9
                  if (!innerRes.ok)
                      return innerRes;
                  // Attach the box's children (not the synthetic column wrapper).
+@@ -234,4 +243,4 @@ export function layoutBoxKinds(vnode, x, y, rectW, rectH, axis, measureNode, lay
+             };
+     }
+ }
+-//# sourceMappingURL=box.js.map
+\ No newline at end of file
++//# sourceMappingURL=box.js.map
+diff --git a/dist/app/widgetRenderer.js b/dist/app/widgetRenderer.js
+index 38d4a5f..69ee099 100644
 --- a/dist/app/widgetRenderer.js
 +++ b/dist/app/widgetRenderer.js
-@@ -613,6 +613,7 @@ export class WidgetRenderer {
-     virtualListStore = createVirtualListStateStore();
+@@ -614,6 +614,7 @@ export class WidgetRenderer {
      tableStore = createTableStateStore();
      treeStore = createTreeStateStore();
      scrollOverrides = new Map();
@@ -82,7 +102,7 @@ index 70dcbbac46b492ea42b6c610802ec01982bad1fc..f8560de0b64f2a28762803f0ef4349c9
      /* --- Tree Lazy-Loading Cache (per tree id, per node key) --- */
      loadedTreeChildrenByTreeId = new Map();
      treeLoadTokenByTreeAndKey = new Map();
-@@ -1470,6 +1471,9 @@ export class WidgetRenderer {
+@@ -1472,6 +1473,9 @@ export class WidgetRenderer {
              diffViewerById: this.diffViewerById,
              rectById: this.rectById,
              scrollOverrides: this.scrollOverrides,
@@ -92,7 +112,7 @@ index 70dcbbac46b492ea42b6c610802ec01982bad1fc..f8560de0b64f2a28762803f0ef4349c9
              findScrollableAncestors: (targetId) => this.findScrollableAncestors(targetId),
          });
          if (wheelRoute)
-@@ -1754,6 +1758,48 @@ export class WidgetRenderer {
+@@ -1750,6 +1754,53 @@ export class WidgetRenderer {
          }
          return Object.freeze([]);
      }
@@ -146,16 +166,16 @@ index 70dcbbac46b492ea42b6c610802ec01982bad1fc..f8560de0b64f2a28762803f0ef4349c9
      applyScrollOverridesToVNode(vnode, overrides = this
          .scrollOverrides) {
          const propsRecord = (vnode.props ?? {});
-@@ -1765,7 +1811,7 @@ export class WidgetRenderer {
-             if (nextPropsMutable === null)
+@@ -1763,7 +1814,7 @@ export class WidgetRenderer {
                  nextPropsMutable = { ...propsRecord };
              return nextPropsMutable;
+         };
 -        if (override) {
 +        if (override && propsForRead.overflow === "scroll") {
              if (propsForRead.scrollX !== override.scrollX || propsForRead.scrollY !== override.scrollY) {
                  const mutable = ensureMutableProps();
                  mutable.scrollX = override.scrollX;
-@@ -2694,7 +2740,7 @@ export class WidgetRenderer {
+@@ -2643,7 +2694,7 @@ export class WidgetRenderer {
              // layout when explicitly requested (resize/layout dirty), bootstrap lacks
              // a tree, or committed layout signatures changed.
              let doLayout = plan.layout || this.layoutTree === null;
@@ -164,8 +184,7 @@ index 70dcbbac46b492ea42b6c610802ec01982bad1fc..f8560de0b64f2a28762803f0ef4349c9
                  doLayout = true;
              const frameNowMs = typeof plan.nowMs === "number" && Number.isFinite(plan.nowMs)
                  ? plan.nowMs
-@@ -2967,7 +3013,7 @@ export class WidgetRenderer {
-                 const pendingScrollOverrides = this.scrollOverrides.size > 0 ? new Map(this.scrollOverrides) : null;
+@@ -2916,7 +2967,7 @@ export class WidgetRenderer {
                  const layoutRootVNode = pendingScrollOverrides !== null
                      ? this.applyScrollOverridesToVNode(constrainedLayoutRootVNode, pendingScrollOverrides)
                      : constrainedLayoutRootVNode;
@@ -174,7 +193,7 @@ index 70dcbbac46b492ea42b6c610802ec01982bad1fc..f8560de0b64f2a28762803f0ef4349c9
                  const initialLayoutRes = this.layoutWithShapeFallback(layoutRootVNode, constrainedLayoutRootVNode, rootPad, rootW, rootH, true);
                  if (!initialLayoutRes.ok) {
                      perfMarkEnd("layout", layoutToken);
-@@ -3051,6 +3097,7 @@ export class WidgetRenderer {
+@@ -3001,6 +3052,7 @@ export class WidgetRenderer {
                  }
                  perfMarkEnd("layout", layoutToken);
                  this.layoutTree = nextLayoutTree;
@@ -182,10 +201,18 @@ index 70dcbbac46b492ea42b6c610802ec01982bad1fc..f8560de0b64f2a28762803f0ef4349c9
                  if (doCommit) {
                      // Seed/refresh per-instance layout stability signatures after a real
                      // layout pass so subsequent commits can take the signature fast path.
+@@ -4076,4 +4128,4 @@ export class WidgetRenderer {
+         }
+     }
+ }
+-//# sourceMappingURL=widgetRenderer.js.map
+\ No newline at end of file
++//# sourceMappingURL=widgetRenderer.js.map
+diff --git a/dist/app/widgetRenderer/mouseRouting.js b/dist/app/widgetRenderer/mouseRouting.js
+index d3b08cf..00b77a3 100644
 --- a/dist/app/widgetRenderer/mouseRouting.js
 +++ b/dist/app/widgetRenderer/mouseRouting.js
-@@ -1202,6 +1202,7 @@ export function routeMouseWheel(event, ctx) {
-             ctx.scrollOverrides.set(nodeId, {
+@@ -1205,9 +1205,10 @@ export function routeMouseWheel(event, ctx) {
                  scrollX: r.nextScrollX ?? meta.scrollX,
                  scrollY: r.nextScrollY ?? meta.scrollY,
              });
@@ -193,3 +220,8 @@ index 70dcbbac46b492ea42b6c610802ec01982bad1fc..f8560de0b64f2a28762803f0ef4349c9
              return ROUTE_RENDER;
          }
      }
+     return null;
+ }
+-//# sourceMappingURL=mouseRouting.js.map
+\ No newline at end of file
++//# sourceMappingURL=mouseRouting.js.map

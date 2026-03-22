@@ -1,8 +1,17 @@
 diff --git a/lib/webrtc/src/transport/ice.js b/lib/webrtc/src/transport/ice.js
-index 55320cf9ac4ef9f44efc223a34c96dd7573f7f17..2714449eb99737b3d995ec9f87701a20c2f16fb4 100644
+index 25c8489..cd06dbf 100644
 --- a/lib/webrtc/src/transport/ice.js
 +++ b/lib/webrtc/src/transport/ice.js
-@@ -238,7 +238,7 @@ class RTCIceTransport {
+@@ -230,25 +230,25 @@ class RTCIceTransport {
+             stats.push(candidateStats);
+         }
+         // Candidate pairs
+         const pairs = this.connection?.candidatePairs
+             ? [
+                 ...this.connection.candidatePairs.filter((p) => p.nominated),
+                 ...this.connection.candidatePairs.filter((p) => !p.nominated),
+             ]
+             : [];
          for (const pair of pairs) {
              const pairStats = {
                  type: "candidate-pair",
@@ -11,3 +20,12 @@ index 55320cf9ac4ef9f44efc223a34c96dd7573f7f17..2714449eb99737b3d995ec9f87701a20
                  timestamp,
                  transportId: (0, stats_1.generateStatsId)("transport", this.id),
                  localCandidateId: (0, stats_1.generateStatsId)("local-candidate", pair.localCandidate.foundation),
+                 remoteCandidateId: (0, stats_1.generateStatsId)("remote-candidate", pair.remoteCandidate.foundation),
+                 state: pair.state,
+                 nominated: pair.nominated,
+                 packetsSent: pair.packetsSent,
+                 packetsReceived: pair.packetsReceived,
+                 bytesSent: pair.bytesSent,
+                 bytesReceived: pair.bytesReceived,
+                 currentRoundTripTime: pair.rtt,
+             };

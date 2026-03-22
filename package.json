@@ -46,6 +46,7 @@
     "werift@0.22.9": "patches/werift@0.22.9.patch"
   },
   "devDependencies": {
+    "@types/node": "^24.5.2",
     "typescript": "^5.8.3"
   }
 }
