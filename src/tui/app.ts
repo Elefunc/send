@@ -910,7 +910,7 @@ export const withAcceptedDraftInput = (state: TuiState, draftInput: string, file
   }, notice)
 
 export const startTui = async (initialConfig: SessionConfig, showEvents = false) => {
-  installCheckboxClickPatch()
+  await installCheckboxClickPatch()
   const initialState = createInitialTuiState(initialConfig, showEvents)
   const app = createNodeApp<TuiState>({ initialState })
   let state = initialState

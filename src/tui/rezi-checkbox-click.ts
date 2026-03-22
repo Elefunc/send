@@ -1,5 +1,3 @@
-import { WidgetRenderer } from "../../node_modules/@rezi-ui/core/dist/app/widgetRenderer.js"
-
 const PATCH_FLAG = Symbol.for("send.rezi.checkboxClickPatchInstalled")
 const CLICKABLE_CHECKBOX_IDS = Symbol.for("send.rezi.checkboxClickPressableIds")
 
@@ -15,8 +13,29 @@ type CheckboxRuntime = {
   [CLICKABLE_CHECKBOX_IDS]?: Set<string>
 }
 
-type PatchedWidgetRendererClass = typeof WidgetRenderer & {
+type PatchedWidgetRendererClass = {
+  prototype: {
+    routeEngineEvent: (event: unknown) => unknown
+  }
   [PATCH_FLAG]?: boolean
+}
+
+type WidgetRendererModule = {
+  WidgetRenderer: PatchedWidgetRendererClass
+}
+
+let widgetRendererPromise: Promise<PatchedWidgetRendererClass> | null = null
+
+const loadWidgetRenderer = () => {
+  if (widgetRendererPromise) return widgetRendererPromise
+  widgetRendererPromise = (async () => {
+    const coreIndexUrl = await import.meta.resolve("@rezi-ui/core")
+    const widgetRendererUrl = new URL("./app/widgetRenderer.js", coreIndexUrl).href
+    const module = await import(widgetRendererUrl) as Partial<WidgetRendererModule>
+    if (!module.WidgetRenderer) throw new Error(`Unable to load WidgetRenderer from ${widgetRendererUrl}`)
+    return module.WidgetRenderer
+  })()
+  return widgetRendererPromise
 }
 
 const syncClickableCheckboxIds = (renderer: CheckboxRuntime) => {
@@ -33,14 +52,14 @@ const syncClickableCheckboxIds = (renderer: CheckboxRuntime) => {
   renderer[CLICKABLE_CHECKBOX_IDS] = nextIds
 }
 
-export const installCheckboxClickPatch = () => {
-  const WidgetRendererClass = WidgetRenderer as PatchedWidgetRendererClass
+export const installCheckboxClickPatch = async () => {
+  const WidgetRendererClass = await loadWidgetRenderer()
   if (WidgetRendererClass[PATCH_FLAG]) return
   WidgetRendererClass[PATCH_FLAG] = true
 
-  const originalRouteEngineEvent = WidgetRenderer.prototype.routeEngineEvent as any
+  const originalRouteEngineEvent = WidgetRendererClass.prototype.routeEngineEvent as any
 
-  WidgetRenderer.prototype.routeEngineEvent = function (this: unknown, event: any) {
+  WidgetRendererClass.prototype.routeEngineEvent = function (this: unknown, event: any) {
     const renderer = this as CheckboxRuntime
     syncClickableCheckboxIds(renderer)
     const result = originalRouteEngineEvent.call(this, event) as any

@@ -1,5 +1,9 @@
 import { DEFAULT_TERMINAL_CAPS, TEST_MOUSE_KIND_DOWN, TEST_MOUSE_KIND_UP, makeBackendBatch, ui, type RuntimeBackend } from "@rezi-ui/core"
 import { describe, expect, test } from "bun:test"
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { dirname, join, resolve } from "node:path"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import { WidgetRenderer, type WidgetRendererHooks } from "../node_modules/@rezi-ui/core/dist/app/widgetRenderer.js"
 import { defaultTheme } from "../node_modules/@rezi-ui/core/dist/theme/defaultTheme.js"
 import { installCheckboxClickPatch } from "../src/tui/rezi-checkbox-click"
@@ -8,6 +12,9 @@ const hooks: WidgetRendererHooks = {
   enterRender: () => {},
   exitRender: () => {},
 }
+
+const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
+const reziCorePackagePath = resolve(packageRoot, "node_modules/@rezi-ui/core")
 
 const createBackend = (): RuntimeBackend => ({
   start: async () => {},
@@ -37,7 +44,7 @@ const clickCenter = (renderer: WidgetRenderer<{}>, id: string) => {
 
 describe("Rezi checkbox click patch", () => {
   test("toggles a checkbox on mouse click and keeps working after rerender", async () => {
-    installCheckboxClickPatch()
+    await installCheckboxClickPatch()
 
     let checked = false
     const changes: boolean[] = []
@@ -112,7 +119,7 @@ describe("Rezi checkbox click patch", () => {
   })
 
   test("cancels the click when mouse-up lands away from the checkbox", async () => {
-    installCheckboxClickPatch()
+    await installCheckboxClickPatch()
 
     let checked = false
     const changes: boolean[] = []
@@ -156,7 +163,7 @@ describe("Rezi checkbox click patch", () => {
   })
 
   test("leaves button clicks as ordinary press actions", async () => {
-    installCheckboxClickPatch()
+    await installCheckboxClickPatch()
 
     let presses = 0
     const renderer = new WidgetRenderer<{}>({ backend: createBackend() })
@@ -194,5 +201,26 @@ describe("Rezi checkbox click patch", () => {
     })
     expect(up.action).toEqual({ id: "press", action: "press" })
     expect(presses).toBe(1)
+  })
+
+  test("resolves WidgetRenderer from an installed package layout", async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "send-installed-shape-"))
+    try {
+      const sendRoot = join(tempRoot, "node_modules/@elefunc/send")
+      const sendTuiDir = join(sendRoot, "src/tui")
+      const reziCoreLink = join(tempRoot, "node_modules/@rezi-ui/core")
+      mkdirSync(sendTuiDir, { recursive: true })
+      mkdirSync(dirname(reziCoreLink), { recursive: true })
+      symlinkSync(reziCorePackagePath, reziCoreLink, "dir")
+      writeFileSync(join(sendRoot, "package.json"), JSON.stringify({ name: "@elefunc/send", type: "module" }))
+      copyFileSync(resolve(packageRoot, "src/tui/rezi-checkbox-click.ts"), join(sendTuiDir, "rezi-checkbox-click.ts"))
+
+      const installedModule = await import(pathToFileURL(join(sendTuiDir, "rezi-checkbox-click.ts")).href) as {
+        installCheckboxClickPatch: () => Promise<void>
+      }
+      await installedModule.installCheckboxClickPatch()
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true })
+    }
   })
 })
