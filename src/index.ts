@@ -4,7 +4,7 @@ import { cac, type CAC } from "cac"
 import { cleanRoom } from "./core/protocol"
 import { SendSession, type SessionConfig, type SessionEvent } from "./core/session"
 import { resolvePeerTargets } from "./core/targeting"
-import { startTui } from "./tui/app"
+import { ensureReziInputCaretPatch } from "./tui/rezi-input-caret"
 
 export class ExitError extends Error {
   constructor(message: string, readonly code = 1) {
@@ -194,6 +194,8 @@ const acceptCommand = async (options: Record<string, unknown>) => {
 
 const tuiCommand = async (options: Record<string, unknown>) => {
   const initialConfig = sessionConfigFrom(options, { autoAcceptIncoming: true, autoSaveIncoming: true })
+  await ensureReziInputCaretPatch()
+  const { startTui } = await import("./tui/app")
   await startTui(initialConfig, !!options.events)
 }
 
