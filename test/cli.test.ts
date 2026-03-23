@@ -1,3 +1,4 @@
+import { resolve } from "node:path"
 import { describe, expect, test } from "bun:test"
 import { createCli, roomAnnouncement, runCli, sessionConfigFrom } from "../src/index"
 
@@ -107,6 +108,11 @@ describe("CLI surface", () => {
     const config = sessionConfigFrom({}, { autoAcceptIncoming: true, autoSaveIncoming: true })
     expect(config.autoAcceptIncoming).toBe(true)
     expect(config.autoSaveIncoming).toBe(true)
+  })
+
+  test("session config defaults saveDir to the current working directory", () => {
+    const config = sessionConfigFrom({}, {})
+    expect(config.saveDir).toBe(resolve(process.cwd()))
   })
 
   test("session config rejects invalid binary toggle values", () => {

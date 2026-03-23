@@ -399,7 +399,7 @@ export class SendSession {
     this.localId = cleanLocalId(config.localId)
     this.room = cleanRoom(config.room)
     this.name = cleanName(config.name ?? fallbackName)
-    this.saveDir = resolve(config.saveDir ?? resolve(process.cwd(), "downloads"))
+    this.saveDir = resolve(config.saveDir ?? resolve(process.cwd()))
     this.peerSelectionMemory = config.peerSelectionMemory ?? new Map()
     this.autoAcceptIncoming = !!config.autoAcceptIncoming
     this.autoSaveIncoming = !!config.autoSaveIncoming

@@ -99,7 +99,7 @@ export const sessionConfigFrom = (options: Record<string, unknown>, defaults: { 
   return {
     room,
     ...self,
-    saveDir: resolve(`${options.saveDir ?? process.env.SEND_SAVE_DIR ?? "downloads"}`),
+    saveDir: resolve(`${options.saveDir ?? process.env.SEND_SAVE_DIR ?? "."}`),
     autoAcceptIncoming: accept ?? defaults.autoAcceptIncoming ?? false,
     autoSaveIncoming: save ?? defaults.autoSaveIncoming ?? false,
     turnUrls: splitList(options.turnUrl ?? process.env.SEND_TURN_URL),

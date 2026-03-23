@@ -112,8 +112,8 @@ const METRIC_BORDER_STYLE = { fg: rgb(20, 25, 32) } as const
 const PRIMARY_TEXT_STYLE = { fg: rgb(255, 255, 255) } as const
 const HEADING_TEXT_STYLE = { fg: rgb(255, 255, 255), bold: true } as const
 const DEFAULT_WEB_URL = "https://send.rt.ht/"
-const DEFAULT_SAVE_DIR = resolve(process.cwd(), "downloads")
-const ABOUT_ELEFUNC_URL = "https://elefunc.com"
+const DEFAULT_SAVE_DIR = resolve(process.cwd())
+const ABOUT_ELEFUNC_URL = "https://elefunc.com/send"
 const ABOUT_TITLE = "About Send"
 const ABOUT_INTRO = "Peer-to-Peer Transfers – Web & CLI"
 const ABOUT_SUMMARY = "Join the same room, see who is there, and offer files directly to selected peers."
@@ -744,8 +744,8 @@ const renderAboutModal = (state: TuiState, actions: TuiActions) => {
   actions: [
     ui.link({
       id: "about-elefunc-link",
-      label: "elefunc.com",
-      accessibleLabel: "Open Elefunc website",
+      label: "elefunc.com/send",
+      accessibleLabel: "Open Elefunc Send page",
       url: ABOUT_ELEFUNC_URL,
     }),
     actionButton("close-about", "Close", actions.closeAbout, "primary"),
