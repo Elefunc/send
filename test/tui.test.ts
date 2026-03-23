@@ -213,7 +213,7 @@ describe("TUI view", () => {
     expect(cliLabel.props.wrap).toBe(true)
     expect(webLabel.props.wrap).toBe(true)
     expect(hasRenderedText(view, "Peer-to-peer file transfer")).toBe(false)
-    expect(hasRenderedText(view, "Peer-to-Peer Transfers for the Web and CLI")).toBe(true)
+    expect(hasRenderedText(view, "Peer-to-Peer Transfers – Web & CLI")).toBe(true)
     expect(hasRenderedText(view, "Join the same room, see who is there, and offer files directly to selected peers.")).toBe(true)
     expect(hasRenderedText(view, "Send uses lightweight signaling to discover peers and negotiate WebRTC. Files move over WebRTC data channels, using direct paths when possible and TURN relay when needed.")).toBe(true)
     expect(hasRenderedText(view, "bunx @elefunc/send@latest")).toBe(true)
