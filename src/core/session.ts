@@ -492,6 +492,20 @@ export class SendSession {
     return sent
   }
 
+  shareTurnWithPeers(peerIds: string[]) {
+    if (!this.extraTurnServers.length) return 0
+    const iceServers = this.sharedTurnServers()
+    const sentPeers: string[] = []
+    for (const peerId of new Set(peerIds.filter(Boolean))) {
+      const peer = this.peers.get(peerId)
+      if (!peer || peer.presence !== "active") continue
+      if (!this.sendSignal({ kind: "turn-share", to: peer.id, iceServers })) continue
+      sentPeers.push(peer.id)
+    }
+    if (sentPeers.length) this.pushLog("turn:share-sent", { peers: sentPeers.length, scope: "filtered", peerIds: sentPeers }, "info")
+    return sentPeers.length
+  }
+
   shareTurnWithAllPeers() {
     const count = this.activePeers().length
     if (!count || !this.extraTurnServers.length) return 0

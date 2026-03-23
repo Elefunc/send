@@ -323,8 +323,24 @@ describe("SendSession mutators", () => {
     expect(sent[0]?.to).toBe("peer1")
     expect(sent[0]?.iceServers).toEqual([{ urls: "turn:turn.example.com:3478", username: "user", credential: "pass" }])
 
+    await session.onSignalMessage(JSON.stringify({
+      room: "demo",
+      from: "peer2",
+      to: "*",
+      at: Date.now(),
+      kind: "hello",
+      name: "bob",
+      reply: true,
+    }))
+
     sent.length = 0
-    expect(session.shareTurnWithAllPeers()).toBe(1)
+    expect(session.shareTurnWithPeers(["peer2", "peer1", "peer2", "missing"])).toBe(2)
+    expect(sent.map(message => message.to)).toEqual(["peer2", "peer1"])
+    expect(sent.every(message => message.kind === "turn-share")).toBe(true)
+    expect(sent.every(message => JSON.stringify(message.iceServers) === JSON.stringify([{ urls: "turn:turn.example.com:3478", username: "user", credential: "pass" }]))).toBe(true)
+
+    sent.length = 0
+    expect(session.shareTurnWithAllPeers()).toBe(2)
     expect(sent[0]?.kind).toBe("turn-share")
     expect(sent[0]?.to).toBe("*")
     expect(sent[0]?.iceServers).toEqual([{ urls: "turn:turn.example.com:3478", username: "user", credential: "pass" }])

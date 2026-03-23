@@ -3,6 +3,7 @@ export interface FileSearchMatch {
   absolutePath: string
   fileName: string
   kind: "file" | "directory"
+  size?: number
   score: number
   indices: number[]
 }

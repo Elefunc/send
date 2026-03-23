@@ -8,6 +8,7 @@ export interface IndexedEntry {
   relativePath: string
   fileName: string
   kind: "file" | "directory"
+  size?: number
 }
 
 export interface FileSearchScope {
@@ -187,6 +188,7 @@ const browseEntries = (entries: readonly IndexedEntry[], resultLimit: number) =>
     absolutePath: entry.absolutePath,
     fileName: entry.fileName,
     kind: entry.kind,
+    size: entry.size,
     score: 0,
     indices: [],
   } satisfies FileSearchMatch))
@@ -203,6 +205,7 @@ export const searchEntries = (entries: readonly IndexedEntry[], query: string, r
       absolutePath: entry.absolutePath,
       fileName: entry.fileName,
       kind: entry.kind,
+      size: entry.size,
       score: match.score,
       indices: match.indices,
     })
@@ -272,6 +275,7 @@ export const crawlWorkspaceEntries = async (workspaceRoot: string, onEntry: (ent
             relativePath: normalizeRelativePath(relative(root, absolutePath)),
             fileName: child.name,
             kind: "file",
+            size: info.size,
           })
         }
       } catch {

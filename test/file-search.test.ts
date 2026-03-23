@@ -39,11 +39,12 @@ describe("file search query helpers", () => {
 
   test("sorts matches by score then ascending relative path", () => {
     const matches = searchEntries([
-      { absolutePath: "/tmp/src/main.test.ts", relativePath: "src/main.test.ts", fileName: "main.test.ts", kind: "file" },
-      { absolutePath: "/tmp/src/main.ts", relativePath: "src/main.ts", fileName: "main.ts", kind: "file" },
-      { absolutePath: "/tmp/docs/domain.md", relativePath: "docs/domain.md", fileName: "domain.md", kind: "file" },
+      { absolutePath: "/tmp/src/main.test.ts", relativePath: "src/main.test.ts", fileName: "main.test.ts", kind: "file", size: 2048 },
+      { absolutePath: "/tmp/src/main.ts", relativePath: "src/main.ts", fileName: "main.ts", kind: "file", size: 1024 },
+      { absolutePath: "/tmp/docs/domain.md", relativePath: "docs/domain.md", fileName: "domain.md", kind: "file", size: 4096 },
     ], "main", 20)
     expect(matches.map(match => match.relativePath)).toEqual(["src/main.ts", "src/main.test.ts", "docs/domain.md"])
+    expect(matches.map(match => match.size)).toEqual([1024, 2048, 4096])
   })
 
   test("derives preview scopes for relative, traversal, absolute, and home inputs", () => {
@@ -91,13 +92,14 @@ describe("file search query helpers", () => {
   test("lists only direct children when browsing a directory with an empty query", () => {
     const matches = searchEntries([
       { absolutePath: "/tmp/alpha", relativePath: "alpha", fileName: "alpha", kind: "directory" },
-      { absolutePath: "/tmp/bravo.ts", relativePath: "bravo.ts", fileName: "bravo.ts", kind: "file" },
-      { absolutePath: "/tmp/src/main.ts", relativePath: "src/main.ts", fileName: "main.ts", kind: "file" },
+      { absolutePath: "/tmp/bravo.ts", relativePath: "bravo.ts", fileName: "bravo.ts", kind: "file", size: 512 },
+      { absolutePath: "/tmp/src/main.ts", relativePath: "src/main.ts", fileName: "main.ts", kind: "file", size: 1024 },
     ], "", 20)
     expect(matches.map(match => `${match.kind}:${match.relativePath}`)).toEqual([
       "directory:alpha",
       "file:bravo.ts",
     ])
+    expect(matches.map(match => match.size ?? null)).toEqual([null, 512])
   })
 })
 
@@ -125,6 +127,25 @@ describe("file search crawler", () => {
     expect(entries.some(entry => entry.includes(".git"))).toBe(false)
     expect(entries.some(entry => entry.includes("node_modules"))).toBe(false)
     await rm(root, { recursive: true, force: true })
+  })
+
+  test("records sizes for file entries but not directories", async () => {
+    const root = join(process.cwd(), ".tmp-send-cli-search-sizes")
+    await rm(root, { recursive: true, force: true })
+    await mkdir(join(root, "src"), { recursive: true })
+    await Bun.write(join(root, "src", "main.ts"), "export {}")
+    const entries: Array<{ kind: string; relativePath: string; size?: number }> = []
+
+    try {
+      await crawlWorkspaceEntries(root, entry => {
+        entries.push({ kind: entry.kind, relativePath: entry.relativePath, size: entry.size })
+      })
+
+      expect(entries.find(entry => entry.kind === "directory" && entry.relativePath === "src")?.size).toBe(undefined)
+      expect(entries.find(entry => entry.kind === "file" && entry.relativePath === "src/main.ts")?.size).toBe(9)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   test("follows symlinked directories without recursing forever", async () => {

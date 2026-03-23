@@ -4,7 +4,7 @@ import type { PeerSnapshot, TransferSnapshot } from "../src/core/session"
 import { fallbackName } from "../src/core/protocol"
 
 const { createTestRenderer, rgb, ui } = reziCore
-const { clampFilePreviewSelectedIndex, consumeSatisfiedFocusRequest, createInitialTuiState, createNoopTuiActions, deriveBootFocusState, ensureFilePreviewScrollTop, filePreviewVisible, groupTransfersByPeer, moveFilePreviewSelection, renderTuiView, resolveWebUrlBase, scheduleBootNameJump, transferSummaryStats, visiblePanes, webInviteUrl, withAcceptedDraftInput } = tuiRuntime
+const { clampFilePreviewSelectedIndex, consumeSatisfiedFocusRequest, createInitialTuiState, createNoopTuiActions, deriveBootFocusState, ensureFilePreviewScrollTop, filePreviewVisible, groupTransfersByPeer, moveFilePreviewSelection, renderTuiView, renderedReadySelectedPeers, resolveWebUrlBase, scheduleBootNameJump, transferSummaryStats, visiblePanes, webInviteUrl, withAcceptedDraftInput } = tuiRuntime
 
 const createWideRenderer = () => createTestRenderer({ viewport: { cols: 180, rows: 60 } })
 const hasRenderedText = (view: ReturnType<ReturnType<typeof createWideRenderer>["render"]>, value: string) =>
@@ -410,7 +410,7 @@ describe("TUI view", () => {
       selectedIndex: 0,
       scrollTop: 0,
       results: [
-        { relativePath: "src/main.ts", absolutePath: "/tmp/src/main.ts", fileName: "main.ts", kind: "file", score: 10, indices: [4, 5, 6, 7] },
+        { relativePath: "src/main.ts", absolutePath: "/tmp/src/main.ts", fileName: "main.ts", kind: "file", size: 1024, score: 10, indices: [4, 5, 6, 7] },
         { relativePath: "src/main", absolutePath: "/tmp/src/main", fileName: "main", kind: "directory", score: 9, indices: [4, 5, 6, 7] },
       ],
     }
@@ -430,8 +430,10 @@ describe("TUI view", () => {
     expect(status.text).toBe("2 matches")
     expect(error.text).toBe(" ")
     expect(view.toText().includes("src/main.ts")).toBe(true)
+    expect(hasRenderedText(view, "1.00 KB")).toBe(true)
     expect(hasRenderedText(view, "dir")).toBe(true)
     expect(hasRenderedText(view, "(dir)")).toBe(false)
+    expect(hasRenderedText(view, "0 B")).toBe(false)
     expect(view.findText("loading...")).toBe(null)
   })
 
@@ -1165,21 +1167,23 @@ describe("TUI view", () => {
     expect(ip.rect.y + ip.rect.h).toBe(row.rect.y + row.rect.h - 1)
   })
 
-  test("shows peer counts as selected over active and uses the web-style empty copy", () => {
+  test("shows peer counts as selected over rendered peers and uses filter-aware empty copy", () => {
     const renderer = createWideRenderer()
     const state = createInitialTuiState({ room: "demo", reconnectSocket: false }, false)
     state.snapshot = {
       ...state.snapshot,
       peers: [
-        { id: "p1", name: "alice", displayName: "alice-p1", presence: "active", selected: true, selectable: true, ready: true, status: "connected", turn: "stun", turnState: "none", dataState: "open", lastError: "", rttMs: 0, localCandidateType: "", remoteCandidateType: "", pathLabel: "—" },
-        { id: "p2", name: "bob", displayName: "bob-p2", presence: "active", selected: false, selectable: true, ready: false, status: "connecting", turn: "stun", turnState: "none", dataState: "connecting", lastError: "", rttMs: 0, localCandidateType: "", remoteCandidateType: "", pathLabel: "—" },
+        { id: "p2", name: "bob", displayName: "bob-p2", presence: "active", selected: true, selectable: true, ready: true, status: "connected", turn: "stun", turnState: "none", dataState: "open", lastError: "", rttMs: 0, localCandidateType: "", remoteCandidateType: "", pathLabel: "—" },
+        { id: "p1", name: "alice", displayName: "alice-p1", presence: "terminal", selected: true, selectable: false, ready: false, status: "left", turn: "stun", turnState: "none", dataState: "closed", lastError: "", rttMs: 0, localCandidateType: "", remoteCandidateType: "", pathLabel: "—" },
       ],
     }
     const nonEmpty = renderer.render(renderTuiView(state, createNoopTuiActions()))
     const shareAll = nonEmpty.findById("share-turn-all-peers")
     const countText = nonEmpty.findById("peers-count-text")
+    const search = nonEmpty.findById("peer-search-input")
     expect(shareAll === null || countText === null).toBe(false)
-    if (!shareAll || !countText) throw new Error("missing peers header controls")
+    expect(search === null).toBe(false)
+    if (!shareAll || !countText || !search) throw new Error("missing peers header controls")
     expect(shareAll.kind).toBe("button")
     expect(shareAll.props.label).toBe("Peers")
     expect(shareAll.props.dsVariant).toBe("ghost")
@@ -1189,13 +1193,60 @@ describe("TUI view", () => {
     expect((shareAll.props as any).focusConfig?.indicator).toBe("none")
     expect((shareAll.props as any).focusConfig?.showHint).toBe(false)
     expect((shareAll.props as any).focusConfig?.contentStyle).toBe(undefined)
-    expect(countText.text).toBe("1/2")
+    expect(search.kind).toBe("input")
+    expect(search.props.placeholder).toBe("filter")
+    expect(countText.text).toBe("1/1")
     expect(shareAll.props.disabled).toBe(undefined)
     expect(shareAll.props.focusable).toBe(false)
 
+    state.peerSearch = "zzz"
+    const filtered = renderer.render(renderTuiView(state, createNoopTuiActions()))
+    const filteredCount = filtered.findById("peers-count-text")
+    expect(filteredCount === null).toBe(false)
+    if (!filteredCount) throw new Error("missing filtered peer count text")
+    expect(filteredCount.text).toBe("0/0")
+    expect(hasRenderedText(filtered, "No peers match current filters.")).toBe(true)
+
     state.snapshot = { ...state.snapshot, peers: [] }
+    state.peerSearch = ""
     const empty = renderer.render(renderTuiView(state, createNoopTuiActions()))
     expect(hasRenderedText(empty, "Waiting for peers in demo...")).toBe(true)
+  })
+
+  test("sorts peers by id and filters them by name-ID substring", () => {
+    const renderer = createWideRenderer()
+    const state = createInitialTuiState({ room: "demo", reconnectSocket: false }, false)
+    state.snapshot = {
+      ...state.snapshot,
+      peers: [
+        { id: "p2", name: "bob", displayName: "bob-p2", presence: "active", selected: true, selectable: true, ready: true, status: "connected", turn: "stun", turnState: "none", dataState: "open", lastError: "", rttMs: 0, localCandidateType: "", remoteCandidateType: "", pathLabel: "—" },
+        { id: "p1", name: "alice", displayName: "alice-p1", presence: "active", selected: true, selectable: true, ready: true, status: "connected", turn: "stun", turnState: "none", dataState: "open", lastError: "", rttMs: 0, localCandidateType: "", remoteCandidateType: "", pathLabel: "—" },
+      ],
+    }
+
+    const ordered = renderer.render(renderTuiView(state, createNoopTuiActions()))
+    const p1 = ordered.findById("peer-row-p1")
+    const p2 = ordered.findById("peer-row-p2")
+    expect(p1 === null || p2 === null).toBe(false)
+    if (!p1 || !p2) throw new Error("missing peer rows")
+    expect(p1.rect.y < p2.rect.y).toBe(true)
+
+    state.peerSearch = "bob-p2"
+    const filtered = renderer.render(renderTuiView(state, createNoopTuiActions()))
+    expect(filtered.findById("peer-row-p1")).toBe(null)
+    expect(filtered.findById("peer-row-p2") === null).toBe(false)
+  })
+
+  test("scopes UI offering targets to rendered selected ready peers", () => {
+    const peers: PeerSnapshot[] = [
+      { id: "p2", name: "bob", displayName: "bob-p2", presence: "active", selected: true, selectable: true, ready: true, status: "connected", turn: "stun", turnState: "none", dataState: "open", lastError: "", rttMs: 0, localCandidateType: "", remoteCandidateType: "", pathLabel: "—" },
+      { id: "p1", name: "alice", displayName: "alice-p1", presence: "active", selected: true, selectable: true, ready: true, status: "connected", turn: "stun", turnState: "none", dataState: "open", lastError: "", rttMs: 0, localCandidateType: "", remoteCandidateType: "", pathLabel: "—" },
+      { id: "p3", name: "carol", displayName: "carol-p3", presence: "active", selected: true, selectable: true, ready: true, status: "connected", turn: "stun", turnState: "none", dataState: "open", lastError: "", rttMs: 0, localCandidateType: "", remoteCandidateType: "", pathLabel: "—" },
+    ]
+
+    expect(renderedReadySelectedPeers(peers, true, "").map(peer => peer.id)).toEqual(["p1", "p2", "p3"])
+    expect(renderedReadySelectedPeers(peers, true, "carol").map(peer => peer.id)).toEqual(["p3"])
+    expect(renderedReadySelectedPeers(peers, true, "zzz")).toEqual([])
   })
 
   test("enables TURN share buttons only when self TURN is configured", () => {
@@ -1229,6 +1280,15 @@ describe("TUI view", () => {
     expect(disabledPeerShare.props.disabled).toBe(undefined)
     expect(disabledShareAll.props.focusable).toBe(false)
     expect(disabledPeerShare.props.focusable).toBe(false)
+
+    const filteredState = createInitialTuiState({ room: "demo", reconnectSocket: false, turnUrls: ["turn:turn.example.com:3478"] }, false)
+    filteredState.snapshot = state.snapshot
+    filteredState.peerSearch = "zzz"
+    view = renderer.render(renderTuiView(filteredState, createNoopTuiActions()))
+    const filteredShareAll = view.findById("share-turn-all-peers")
+    expect(filteredShareAll === null).toBe(false)
+    if (!filteredShareAll) throw new Error("missing filtered TURN share-all button")
+    expect(filteredShareAll.props.focusable).toBe(false)
   })
 
   test("hides the events card by default and shows it when enabled", () => {

@@ -45,6 +45,7 @@ export interface TuiState {
   sessionSeed: SessionSeed
   peerSelectionByRoom: Map<string, Map<string, boolean>>
   snapshot: SessionSnapshot
+  peerSearch: string
   focusedId: string | null
   roomInput: string
   nameInput: string
@@ -72,6 +73,7 @@ export interface TuiActions {
   jumpToNewSelf: TuiAction
   commitName: TuiAction
   setNameInput: (value: string) => void
+  setPeerSearch: (value: string) => void
   toggleSelectReadyPeers: TuiAction
   clearPeerSelection: TuiAction
   toggleHideTerminalPeers: TuiAction
@@ -97,6 +99,7 @@ export interface TuiActions {
 
 const ROOM_INPUT_ID = "room-input"
 const NAME_INPUT_ID = "name-input"
+const PEER_SEARCH_INPUT_ID = "peer-search-input"
 const DRAFT_INPUT_ID = "draft-input"
 const TRANSPARENT_BORDER_STYLE = { fg: rgb(7, 10, 12) } as const
 const METRIC_BORDER_STYLE = { fg: rgb(20, 25, 32) } as const
@@ -151,6 +154,7 @@ export const createNoopTuiActions = (): TuiActions => ({
   jumpToNewSelf: noop,
   commitName: noop,
   setNameInput: noop,
+  setPeerSearch: noop,
   toggleSelectReadyPeers: noop,
   clearPeerSelection: noop,
   toggleHideTerminalPeers: noop,
@@ -206,6 +210,16 @@ const transferStatusKind = (status: TransferSnapshot["status"]) => ({
   error: "offline",
 }[status] || "unknown") as "online" | "offline" | "away" | "busy" | "unknown"
 const visiblePeers = (peers: PeerSnapshot[], hideTerminalPeers: boolean) => hideTerminalPeers ? peers.filter(peer => peer.presence === "active") : peers
+const peerSearchNeedle = (value: string) => `${value ?? ""}`.trim().toLowerCase()
+const peerMatchesSearch = (peer: PeerSnapshot, search: string) => !search || peer.displayName.toLowerCase().includes(search)
+export const renderedPeers = (peers: PeerSnapshot[], hideTerminalPeers: boolean, search: string) => {
+  const needle = peerSearchNeedle(search)
+  return visiblePeers(peers, hideTerminalPeers)
+    .filter(peer => peerMatchesSearch(peer, needle))
+    .sort((left, right) => left.id.localeCompare(right.id))
+}
+export const renderedReadySelectedPeers = (peers: PeerSnapshot[], hideTerminalPeers: boolean, search: string) =>
+  renderedPeers(peers, hideTerminalPeers, search).filter(peer => peer.selected && peer.ready)
 const transferProgress = (transfer: TransferSnapshot) => Math.max(0, Math.min(1, transfer.progress / 100))
 const isPendingOffer = (transfer: TransferSnapshot) => transfer.direction === "out" && (transfer.status === "queued" || transfer.status === "offered")
 const statusVariant = (status: TransferSnapshot["status"]): BadgeVariant => ({
@@ -479,6 +493,7 @@ export const createInitialTuiState = (initialConfig: SessionConfig, showEvents =
     sessionSeed,
     peerSelectionByRoom,
     snapshot: session.snapshot(),
+    peerSearch: "",
     focusedId: null,
     roomInput: sessionSeed.room,
     nameInput: visibleNameInput(sessionSeed.name),
@@ -700,18 +715,18 @@ const renderPeerRow = (peer: PeerSnapshot, turnShareEnabled: boolean, actions: T
 ])
 
 const renderPeersCard = (state: TuiState, actions: TuiActions) => {
-  const peers = visiblePeers(state.snapshot.peers, state.hideTerminalPeers)
-  const activeCount = state.snapshot.peers.filter(peer => peer.presence === "active").length
-  const selectedCount = state.snapshot.peers.filter(peer => peer.selectable && peer.selected).length
+  const peers = renderedPeers(state.snapshot.peers, state.hideTerminalPeers, state.peerSearch)
+  const activeCount = peers.filter(peer => peer.presence === "active").length
+  const selectedCount = peers.filter(peer => peer.selectable && peer.selected).length
   const canShareTurn = state.session.canShareTurn()
   return denseSection({
     id: "peers-card",
     titleNode: ui.row({ id: "peers-title-row", gap: 1, items: "center" }, [
       headingTextButton("share-turn-all-peers", "Peers", canShareTurn && !!activeCount ? actions.shareTurnWithAllPeers : undefined, {
         focusable: canShareTurn && !!activeCount,
-        accessibleLabel: "share TURN with all active peers",
+        accessibleLabel: "share TURN with matching active peers",
       }),
-      ui.text(`${selectedCount}/${activeCount}`, { id: "peers-count-text", variant: "heading" }),
+      ui.text(`${selectedCount}/${peers.length}`, { id: "peers-count-text", variant: "heading" }),
     ]),
     flex: 1,
     actions: [
@@ -720,10 +735,16 @@ const renderPeersCard = (state: TuiState, actions: TuiActions) => {
       toggleButton("toggle-clean-peers", "Clean", state.hideTerminalPeers, actions.toggleHideTerminalPeers),
     ],
   }, [
+    ui.input({
+      id: PEER_SEARCH_INPUT_ID,
+      value: state.peerSearch,
+      placeholder: "filter",
+      onInput: value => actions.setPeerSearch(value),
+    }),
     ui.box({ id: "peers-list", flex: 1, minHeight: 0, overflow: "scroll", border: "none" }, [
       peers.length
         ? ui.column({ gap: 0 }, peers.map(peer => renderPeerRow(peer, canShareTurn, actions)))
-        : ui.empty(`Waiting for peers in ${state.snapshot.room}...`),
+        : ui.empty(state.snapshot.peers.length ? "No peers match current filters." : `Waiting for peers in ${state.snapshot.room}...`),
     ]),
   ])
 }
@@ -768,6 +789,7 @@ const renderFilePreviewRow = (match: FileSearchMatch, index: number, selected: b
     offsetFileSearchMatchIndices(displayPrefix, match.indices),
     { id: `file-preview-path-${index}`, flex: 1 },
   ),
+  match.kind === "file" && typeof match.size === "number" ? ui.text(formatBytes(match.size), { style: { dim: true } }) : null,
   match.kind === "directory" ? tightTag("dir", { variant: "info", bare: true }) : null,
 ])
 
@@ -1233,11 +1255,12 @@ export const startTui = async (initialConfig: SessionConfig, showEvents = false)
 
   const maybeOfferDrafts = () => {
     if (!state.autoOfferOutgoing || !state.drafts.length || state.offeringDrafts) return
-    if (!state.snapshot.peers.some(peer => peer.presence === "active" && peer.ready && peer.selected)) return
+    const targetPeerIds = renderedReadySelectedPeers(state.snapshot.peers, state.hideTerminalPeers, state.peerSearch).map(peer => peer.id)
+    if (!targetPeerIds.length) return
     const session = state.session
     const pendingDrafts = [...state.drafts]
     commit(current => ({ ...current, offeringDrafts: true }))
-    void session.offerToSelectedPeers(pendingDrafts.map(draft => draft.path)).then(
+    void session.queueFiles(pendingDrafts.map(draft => draft.path), targetPeerIds).then(
       ids => {
         if (state.session !== session) return
         const offeredIds = new Set(pendingDrafts.map(draft => draft.id))
@@ -1277,6 +1300,7 @@ export const startTui = async (initialConfig: SessionConfig, showEvents = false)
       sessionSeed: nextSeed,
       peerSelectionByRoom: current.peerSelectionByRoom,
       snapshot: nextSession.snapshot(),
+      peerSearch: "",
       roomInput: nextSeed.room,
       nameInput: visibleNameInput(nextSeed.name),
       draftInput: "",
@@ -1350,16 +1374,19 @@ export const startTui = async (initialConfig: SessionConfig, showEvents = false)
     jumpToNewSelf: () => replaceSession({ ...state.sessionSeed, localId: cleanLocalId(uid(8)) }, "Started a fresh self ID.", { reseedBootFocus: true }),
     commitName,
     setNameInput: value => commit(current => ({ ...current, nameInput: value })),
+    setPeerSearch: value => commit(current => ({ ...current, peerSearch: value })),
     toggleSelectReadyPeers: () => {
+      const peers = renderedPeers(state.snapshot.peers, state.hideTerminalPeers, state.peerSearch)
       let changed = 0
-      for (const peer of state.snapshot.peers) if (state.session.setPeerSelected(peer.id, peer.presence === "active" && peer.ready)) changed += 1
-      commit(current => withNotice(current, { text: changed ? "Selected ready peers." : "No ready peers to select.", variant: changed ? "success" : "info" }))
+      for (const peer of peers) if (state.session.setPeerSelected(peer.id, peer.presence === "active" && peer.ready)) changed += 1
+      commit(current => withNotice(current, { text: changed ? "Selected matching ready peers." : "No matching ready peers to select.", variant: changed ? "success" : "info" }))
       maybeOfferDrafts()
     },
     clearPeerSelection: () => {
+      const peers = renderedPeers(state.snapshot.peers, state.hideTerminalPeers, state.peerSearch)
       let changed = 0
-      for (const peer of state.snapshot.peers) if (state.session.setPeerSelected(peer.id, false)) changed += 1
-      commit(current => withNotice(current, { text: changed ? `Cleared ${plural(changed, "peer selection")}.` : "No peer selections to clear.", variant: changed ? "warning" : "info" }))
+      for (const peer of peers) if (state.session.setPeerSelected(peer.id, false)) changed += 1
+      commit(current => withNotice(current, { text: changed ? `Cleared ${plural(changed, "matching peer selection")}.` : "No matching peer selections to clear.", variant: changed ? "warning" : "info" }))
     },
     toggleHideTerminalPeers: () => commit(current => withNotice({ ...current, hideTerminalPeers: !current.hideTerminalPeers }, { text: current.hideTerminalPeers ? "Terminal peers shown." : "Terminal peers hidden.", variant: "info" })),
     togglePeer: peerId => {
@@ -1379,13 +1406,16 @@ export const startTui = async (initialConfig: SessionConfig, showEvents = false)
       }))
     },
     shareTurnWithAllPeers: () => {
-      const shared = state.session.shareTurnWithAllPeers()
+      const targetPeerIds = renderedPeers(state.snapshot.peers, state.hideTerminalPeers, state.peerSearch)
+        .filter(peer => peer.presence === "active")
+        .map(peer => peer.id)
+      const shared = state.session.shareTurnWithPeers(targetPeerIds)
       commit(current => withNotice(current, {
         text: !state.session.canShareTurn()
           ? "TURN is not configured."
           : shared
-            ? `Shared TURN with ${plural(shared, "active peer")}.`
-            : "No active peers to share TURN with.",
+            ? `Shared TURN with ${plural(shared, "matching peer")}.`
+            : "No matching active peers to share TURN with.",
         variant: !state.session.canShareTurn() ? "info" : shared ? "success" : "info",
       }))
     },
