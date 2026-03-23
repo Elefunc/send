@@ -1,6 +1,12 @@
 import type { RTCIceCandidateInit, RTCIceServer, RTCSessionDescriptionInit } from "werift"
 
 export const SIGNAL_WS_URL = "wss://sig.efn.kr/ws"
+export const SIGNAL_PULSE_URL = "https://sig.efn.kr/pulse?app=send"
+export const signalSocketUrl = (room: string) => {
+  const url = new URL(SIGNAL_WS_URL)
+  url.search = new URLSearchParams({ i: room, app: "send" }).toString()
+  return url.toString()
+}
 export const BASE_ICE_SERVERS = [
   { urls: "stun:stun.cloudflare.com:3478" },
   { urls: "stun:stun.l.google.com:19302" },

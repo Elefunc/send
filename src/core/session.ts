@@ -19,7 +19,9 @@ import {
   fallbackName,
   formatEta,
   formatRate,
+  SIGNAL_PULSE_URL,
   signalEpoch,
+  signalSocketUrl,
   stamp,
   turnStateLabel,
   type CandidateSignal,
@@ -171,8 +173,6 @@ export interface SessionConfig {
 const LOG_LIMIT = 200
 const STATS_POLL_MS = 1000
 const PROFILE_URL = "https://ip.rt.ht/"
-const PULSE_URL = "https://sig.efn.kr/pulse"
-
 export interface PeerConnectivitySnapshot {
   rttMs: number
   localCandidateType: string
@@ -953,7 +953,7 @@ export class SendSession {
     if (this.stopped) return
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
     const token = ++this.socketToken
-    const socket = new WebSocket(`${SIGNAL_WS_URL}?i=${encodeURIComponent(this.room)}`)
+    const socket = new WebSocket(signalSocketUrl(this.room))
     this.socket = socket
     this.socketState = "connecting"
     this.emit({ type: "socket", socketState: this.socketState })
@@ -1012,7 +1012,7 @@ export class SendSession {
     this.pulse = { ...this.pulse, state: "checking", error: "" }
     this.notify()
     try {
-      const response = await fetch(PULSE_URL, { cache: "no-store", signal: timeoutSignal(3500, this.lifecycleAbortController?.signal) })
+      const response = await fetch(SIGNAL_PULSE_URL, { cache: "no-store", signal: timeoutSignal(3500, this.lifecycleAbortController?.signal) })
       if (!response.ok) throw new Error(`pulse ${response.status}`)
       if (this.stopped) return
       this.pulse = { state: "open", at: Date.now(), ms: performance.now() - startedAt, error: "" }

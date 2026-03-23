@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { cleanName, cleanRoom, displayPeerName, peerDefaultsToken } from "../src/core/protocol"
+import { cleanName, cleanRoom, displayPeerName, peerDefaultsToken, SIGNAL_PULSE_URL, signalSocketUrl } from "../src/core/protocol"
 
 describe("protocol cleaners", () => {
   test("cleanRoom normalizes room ids", () => {
@@ -20,5 +20,10 @@ describe("protocol cleaners", () => {
     expect(peerDefaultsToken({ defaults: { autoAcceptIncoming: false, autoSaveIncoming: true } })).toBe("aS")
     expect(peerDefaultsToken({ defaults: { autoAcceptIncoming: false, autoSaveIncoming: false } })).toBe("as")
     expect(peerDefaultsToken()).toBe("??")
+  })
+
+  test("signal URLs always include the send app query", () => {
+    expect(SIGNAL_PULSE_URL).toBe("https://sig.efn.kr/pulse?app=send")
+    expect(signalSocketUrl("demo room")).toBe("wss://sig.efn.kr/ws?i=demo+room&app=send")
   })
 })
