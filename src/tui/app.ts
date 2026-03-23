@@ -115,7 +115,7 @@ const DEFAULT_WEB_URL = "https://send.rt.ht/"
 const DEFAULT_SAVE_DIR = resolve(process.cwd(), "downloads")
 const ABOUT_ELEFUNC_URL = "https://elefunc.com"
 const ABOUT_TITLE = "About Send"
-const ABOUT_INTRO = "Room-based peer-to-peer file transfers for the web and terminal"
+const ABOUT_INTRO = "Peer-to-Peer Transfers for the Web and CLI"
 const ABOUT_SUMMARY = "Join the same room, see who is there, and offer files directly to selected peers."
 const ABOUT_RUNTIME = "Send uses lightweight signaling to discover peers and negotiate WebRTC. Files move over WebRTC data channels, using direct paths when possible and TURN relay when needed."
 const ABOUT_CLI_LABEL = "bunx @elefunc/send@latest"
@@ -133,6 +133,9 @@ const pluralRules = new Intl.PluralRules()
 export const visiblePanes = (showEvents: boolean): VisiblePane[] => showEvents ? ["peers", "transfers", "logs"] : ["peers", "transfers"]
 
 const noop = () => {}
+export const isEditableFocusId = (focusedId: string | null) =>
+  focusedId === ROOM_INPUT_ID || focusedId === NAME_INPUT_ID || focusedId === PEER_SEARCH_INPUT_ID || focusedId === DRAFT_INPUT_ID
+export const shouldSwallowQQuit = (focusedId: string | null) => !isEditableFocusId(focusedId)
 
 const hashBool = (value: boolean) => value ? "1" : "0"
 const safeShellArgPattern = /^[A-Za-z0-9._/:?=&,+@%-]+$/
@@ -201,7 +204,7 @@ const renderCliCommand = (state: ShareCliState, { includeSelf = false, includePr
 }
 
 export const webInviteUrl = (state: ShareUrlState, baseUrl = resolveWebUrlBase()) => {
-  return renderWebUrl(state, baseUrl, false)
+  return renderWebUrl(state, baseUrl)
 }
 
 export const aboutWebUrl = (state: ShareUrlState, baseUrl = DEFAULT_WEB_URL) => renderWebUrl(state, baseUrl)
@@ -708,21 +711,28 @@ const renderHeader = (state: TuiState, actions: TuiActions) => denseSection({
 
 const renderAboutModal = (state: TuiState, actions: TuiActions) => {
   const cliCommand = aboutCliCommand(state)
+  const cliCopyText = `${ABOUT_CLI_LABEL} ${cliCommand}`
+  const cliCopyUrl = `https://copy.rt.ht/#${new URLSearchParams({ text: cliCopyText })}`
   const currentWebUrl = aboutWebUrl(state)
   const currentWebLabel = aboutWebLabel(state)
   return ui.modal({
   id: "about-modal",
   title: ABOUT_TITLE,
   content: ui.column({ gap: 1 }, [
-    ui.text(ABOUT_INTRO, { id: "about-intro", variant: "heading" }),
-    ui.text(ABOUT_SUMMARY, { id: "about-summary" }),
-    ui.text(ABOUT_RUNTIME, { id: "about-runtime" }),
+    ui.text(ABOUT_INTRO, { id: "about-intro", variant: "heading", wrap: true }),
+    ui.text(ABOUT_SUMMARY, { id: "about-summary", wrap: true }),
+    ui.text(ABOUT_RUNTIME, { id: "about-runtime", wrap: true }),
     ui.column({ gap: 0 }, [
-      ui.text(ABOUT_CLI_LABEL, { id: "about-cli-label", variant: "caption" }),
-      ui.text(cliCommand, { id: "about-current-cli" }),
+      ui.text(ABOUT_CLI_LABEL, { id: "about-cli-label", variant: "caption", wrap: true }),
+      ui.link({
+        id: "about-current-cli",
+        label: cliCommand,
+        accessibleLabel: "Copy current CLI command",
+        url: cliCopyUrl,
+      }),
     ]),
     ui.column({ gap: 0 }, [
-      ui.text(ABOUT_WEB_LINK_LABEL, { id: "about-web-link-label", variant: "caption" }),
+      ui.text(ABOUT_WEB_LINK_LABEL, { id: "about-web-link-label", variant: "caption", wrap: true }),
       ui.link({
         id: "about-current-web-link",
         label: currentWebLabel,
@@ -743,6 +753,8 @@ const renderAboutModal = (state: TuiState, actions: TuiActions) => {
   width: 72,
   maxWidth: 84,
   minWidth: 54,
+  frameStyle: { background: rgb(0, 0, 0) },
+  backdrop: { variant: "none" },
   initialFocus: "close-about",
   returnFocusTo: ABOUT_TRIGGER_ID,
   onClose: actions.closeAbout,
@@ -782,6 +794,14 @@ const renderSelfMetric = (label: string, value: string) => ui.box({ flex: 1, min
 ])
 
 const renderSelfProfileLine = (value: string) => ui.text(value || "—")
+const ipLookupUrl = (value: string) => value ? `https://gi.rt.ht/:${encodeURIComponent(value)}` : null
+const renderIpProfileLine = (value: string) => {
+  const ip = value || ""
+  const url = ipLookupUrl(ip)
+  return url
+    ? ui.link({ label: ip, url, accessibleLabel: `Open IP lookup for ${ip}` })
+    : ui.text("—")
+}
 const formatPeerRtt = (value: number) => Number.isFinite(value) ? `${countFormat.format(Math.round(value))}ms` : "—"
 const renderPeerMetric = (label: string, value: string, asTag = false) => ui.box({ flex: 1, minWidth: 10, border: "single", borderStyle: METRIC_BORDER_STYLE }, [
   ui.column({ gap: 0 }, [
@@ -815,7 +835,7 @@ const renderSelfCard = (state: TuiState, actions: TuiActions) => denseSection({
     renderSelfProfileLine(geoSummary(state.snapshot.profile)),
     renderSelfProfileLine(netSummary(state.snapshot.profile)),
     renderSelfProfileLine(uaSummary(state.snapshot.profile)),
-    renderSelfProfileLine(profileIp(state.snapshot.profile)),
+    renderIpProfileLine(profileIp(state.snapshot.profile)),
   ]),
 ])
 
@@ -860,7 +880,7 @@ const renderPeerRow = (peer: PeerSnapshot, turnShareEnabled: boolean, actions: T
       renderSelfProfileLine(geoSummary(peer.profile)),
       renderSelfProfileLine(netSummary(peer.profile)),
       renderSelfProfileLine(uaSummary(peer.profile)),
-      renderSelfProfileLine(profileIp(peer.profile)),
+      renderIpProfileLine(profileIp(peer.profile)),
     ]),
     peer.lastError ? ui.callout(peer.lastError, { variant: "error" }) : null,
   ]),
@@ -1678,6 +1698,11 @@ export const startTui = async (initialConfig: SessionConfig, launchOptions: TuiL
   })
   app.keys({
     "ctrl+c": { description: "Quit", handler: requestStop },
+    q: {
+      description: "no-op",
+      when: ctx => shouldSwallowQQuit(ctx.focusedId),
+      handler: noop,
+    },
     tab: {
       description: "Accept focused preview row",
       when: ctx => ctx.focusedId === DRAFT_INPUT_ID && !!selectedFilePreviewMatch(state) && filePreviewVisible(state),

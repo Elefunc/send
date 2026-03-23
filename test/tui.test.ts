@@ -5,7 +5,7 @@ import type { PeerSnapshot, TransferSnapshot } from "../src/core/session"
 import { fallbackName } from "../src/core/protocol"
 
 const { createTestRenderer, rgb, ui } = reziCore
-const { aboutCliCommand, aboutWebLabel, aboutWebUrl, clampFilePreviewSelectedIndex, consumeSatisfiedFocusRequest, createInitialTuiState, createNoopTuiActions, createQuitController, deriveBootFocusState, ensureFilePreviewScrollTop, filePreviewVisible, groupTransfersByPeer, moveFilePreviewSelection, renderTuiView, renderedReadySelectedPeers, resolveWebUrlBase, resumeCliCommand, resumeOutputLines, resumeWebUrl, scheduleBootNameJump, transferSummaryStats, visiblePanes, webInviteUrl, withAcceptedDraftInput } = tuiRuntime
+const { aboutCliCommand, aboutWebLabel, aboutWebUrl, clampFilePreviewSelectedIndex, consumeSatisfiedFocusRequest, createInitialTuiState, createNoopTuiActions, createQuitController, deriveBootFocusState, ensureFilePreviewScrollTop, filePreviewVisible, groupTransfersByPeer, isEditableFocusId, moveFilePreviewSelection, renderTuiView, renderedReadySelectedPeers, resolveWebUrlBase, resumeCliCommand, resumeOutputLines, resumeWebUrl, scheduleBootNameJump, shouldSwallowQQuit, transferSummaryStats, visiblePanes, webInviteUrl, withAcceptedDraftInput } = tuiRuntime
 
 const createWideRenderer = () => createTestRenderer({ viewport: { cols: 180, rows: 60 } })
 const hasRenderedText = (view: ReturnType<ReturnType<typeof createWideRenderer>["render"]>, value: string) =>
@@ -43,6 +43,28 @@ describe("TUI pane visibility", () => {
 
   test("shows the logs pane when events are enabled", () => {
     expect(visiblePanes(true)).toEqual(["peers", "transfers", "logs"])
+  })
+})
+
+describe("TUI q quit guard", () => {
+  test("allows q typing in editable inputs", () => {
+    expect(isEditableFocusId("room-input")).toBe(true)
+    expect(isEditableFocusId("name-input")).toBe(true)
+    expect(isEditableFocusId("peer-search-input")).toBe(true)
+    expect(isEditableFocusId("draft-input")).toBe(true)
+    expect(shouldSwallowQQuit("room-input")).toBe(false)
+    expect(shouldSwallowQQuit("name-input")).toBe(false)
+    expect(shouldSwallowQQuit("peer-search-input")).toBe(false)
+    expect(shouldSwallowQQuit("draft-input")).toBe(false)
+  })
+
+  test("swallows q quit outside editable inputs", () => {
+    expect(isEditableFocusId(null)).toBe(false)
+    expect(isEditableFocusId("open-about")).toBe(false)
+    expect(isEditableFocusId("peer-share-turn-p1")).toBe(false)
+    expect(shouldSwallowQQuit(null)).toBe(true)
+    expect(shouldSwallowQQuit("open-about")).toBe(true)
+    expect(shouldSwallowQQuit("peer-share-turn-p1")).toBe(true)
   })
 })
 
@@ -171,14 +193,27 @@ describe("TUI view", () => {
     const close = view.findById("close-about")
     const elefunc = view.findById("about-elefunc-link")
     const currentWebLink = view.findById("about-current-web-link")
-    expect(modal === null || close === null || elefunc === null || currentWebLink === null).toBe(false)
-    if (!modal || !close || !elefunc || !currentWebLink) throw new Error("missing about modal nodes")
+    const intro = view.findById("about-intro")
+    const summary = view.findById("about-summary")
+    const runtime = view.findById("about-runtime")
+    const cliLabel = view.findById("about-cli-label")
+    const cliValue = view.findById("about-current-cli")
+    const webLabel = view.findById("about-web-link-label")
+    expect(modal === null || close === null || elefunc === null || currentWebLink === null || intro === null || summary === null || runtime === null || cliLabel === null || cliValue === null || webLabel === null).toBe(false)
+    if (!modal || !close || !elefunc || !currentWebLink || !intro || !summary || !runtime || !cliLabel || !cliValue || !webLabel) throw new Error("missing about modal nodes")
     expect(modal.kind).toBe("modal")
     expect(modal.props.title).toBe("About Send")
+    expect(modal.props.frameStyle).toEqual({ background: rgb(0, 0, 0) })
+    expect(modal.props.backdrop).toEqual({ variant: "none" })
     expect(modal.props.initialFocus).toBe("close-about")
     expect(modal.props.returnFocusTo).toBe("open-about")
+    expect(intro.props.wrap).toBe(true)
+    expect(summary.props.wrap).toBe(true)
+    expect(runtime.props.wrap).toBe(true)
+    expect(cliLabel.props.wrap).toBe(true)
+    expect(webLabel.props.wrap).toBe(true)
     expect(hasRenderedText(view, "Peer-to-peer file transfer")).toBe(false)
-    expect(hasRenderedText(view, "Room-based peer-to-peer file transfers for the web and terminal")).toBe(true)
+    expect(hasRenderedText(view, "Peer-to-Peer Transfers for the Web and CLI")).toBe(true)
     expect(hasRenderedText(view, "Join the same room, see who is there, and offer files directly to selected peers.")).toBe(true)
     expect(hasRenderedText(view, "Send uses lightweight signaling to discover peers and negotiate WebRTC. Files move over WebRTC data channels, using direct paths when possible and TURN relay when needed.")).toBe(true)
     expect(hasRenderedText(view, "bunx @elefunc/send@latest")).toBe(true)
@@ -191,6 +226,9 @@ describe("TUI view", () => {
     expect(hasRenderedText(view, "How it works")).toBe(false)
     expect(hasRenderedText(view, "Who made it")).toBe(false)
     expect(hasRenderedText(view, "Under the hood")).toBe(false)
+    expect(cliValue.kind).toBe("link")
+    expect(cliValue.props.label).toBe("--room demo")
+    expect(cliValue.props.url).toBe("https://copy.rt.ht/#text=bunx+%40elefunc%2Fsend%40latest+--room+demo")
     expect(elefunc.kind).toBe("link")
     expect(elefunc.props.url).toBe("https://elefunc.com")
     expect(currentWebLink.kind).toBe("link")
@@ -315,7 +353,10 @@ describe("TUI view", () => {
     expect(view.findText("Seoul, Seoul, KR") === null).toBe(false)
     expect(view.findText("Edge ISP · ICN") === null).toBe(false)
     expect(view.findText("send-cli · linux") === null).toBe(false)
-    expect(view.findText("203.0.113.5") === null).toBe(false)
+    const selfIp = view.nodes.find(node => node.kind === "link" && "label" in node.props && node.props.label === "203.0.113.5")
+    expect(selfIp === undefined).toBe(false)
+    if (!selfIp) throw new Error("missing self IP link")
+    expect(selfIp.props.url).toBe("https://gi.rt.ht/:203.0.113.5")
     expect(view.toText().includes("open")).toBe(true)
     expect(view.toText().includes("used")).toBe(true)
     expect(view.toText().includes("(open)")).toBe(false)
@@ -371,7 +412,7 @@ describe("TUI view", () => {
     expect(inviteLink.kind).toBe("link")
     expect(inviteLink.props.label).toBe("📋")
     expect(inviteLink.props.accessibleLabel).toBe("Open invite link")
-    expect(inviteLink.props.url).toBe("https://send.rt.ht/#room=demo&clean=1&accept=1&offer=1&save=1")
+    expect(inviteLink.props.url).toBe("https://send.rt.ht/#room=demo")
     expect(inviteLink.rect.x - inviteSlot.rect.x).toBe(inviteSlot.rect.x + inviteSlot.rect.w - (inviteLink.rect.x + inviteLink.rect.w))
     expect(hasRenderedText(view, "📋")).toBe(true)
   })
@@ -395,13 +436,13 @@ describe("TUI view", () => {
     await withEnv({ SEND_WEB_URL: "https://example.com/send/" }, () => {
       const state = createInitialTuiState({ room: "demo", reconnectSocket: false }, false)
       expect(resolveWebUrlBase()).toBe("https://example.com/send/")
-      expect(webInviteUrl(state)).toBe("https://example.com/send/#room=demo&clean=1&accept=1&offer=1&save=1")
+      expect(webInviteUrl(state)).toBe("https://example.com/send/#room=demo")
     })
 
     await withEnv({ SEND_WEB_URL: "not a valid url" }, () => {
       const state = createInitialTuiState({ room: "demo", reconnectSocket: false }, false)
       expect(resolveWebUrlBase()).toBe("https://send.rt.ht/")
-      expect(webInviteUrl(state)).toBe("https://send.rt.ht/#room=demo&clean=1&accept=1&offer=1&save=1")
+      expect(webInviteUrl(state)).toBe("https://send.rt.ht/#room=demo")
     })
   })
 
@@ -1023,7 +1064,10 @@ describe("TUI view", () => {
     expect(hasRenderedText(view, "Direct ↔ TURN")).toBe(true)
     expect(hasRenderedText(view, "Seoul, Seoul, KR")).toBe(true)
     expect(hasRenderedText(view, "Edge ISP · ICN")).toBe(true)
-    expect(hasRenderedText(view, "203.0.113.5")).toBe(true)
+    const peerIp = view.nodes.find(node => node.kind === "link" && "label" in node.props && node.props.label === "203.0.113.5")
+    expect(peerIp === undefined).toBe(false)
+    if (!peerIp) throw new Error("missing peer IP link")
+    expect(peerIp.props.url).toBe("https://gi.rt.ht/:203.0.113.5")
     expect(view.findText("Selected")).toBe(null)
     const turn = view.findText("TURN")
     expect(turn === null).toBe(false)
@@ -1038,6 +1082,49 @@ describe("TUI view", () => {
       if (!borderStyle || typeof borderStyle !== "object") throw new Error("missing peer metric border style")
       expect("fg" in borderStyle ? borderStyle.fg : null).toBe(rgb(20, 25, 32))
     }
+  })
+
+  test("keeps missing IP profile rows as plain dashes", () => {
+    const renderer = createWideRenderer()
+    const state = createInitialTuiState({ room: "demo", reconnectSocket: false }, false)
+    state.snapshot = {
+      ...state.snapshot,
+      profile: {
+        ...state.snapshot.profile,
+        network: { ...(state.snapshot.profile?.network || {}), ip: "" },
+      },
+      peers: [
+        {
+          id: "p1",
+          name: "alice",
+          displayName: "alice-p1",
+          presence: "active",
+          selected: true,
+          selectable: true,
+          ready: true,
+          status: "connected",
+          turn: "custom-turn",
+          turnState: "used",
+          dataState: "open",
+          lastError: "",
+          profile: {
+            geo: { city: "Seoul", region: "Seoul", country: "KR" },
+            network: { asOrganization: "Edge ISP", colo: "ICN", ip: "" },
+            ua: { browser: "send-cli", os: "linux", device: "desktop" },
+            defaults: { autoAcceptIncoming: true, autoSaveIncoming: false },
+            ready: true,
+            error: "",
+          },
+          rttMs: 12,
+          localCandidateType: "host",
+          remoteCandidateType: "relay",
+          pathLabel: "Direct ↔ TURN",
+        },
+      ],
+    }
+    const view = renderer.render(renderTuiView(state, createNoopTuiActions()))
+    expect(view.nodes.some(node => node.kind === "link" && "label" in node.props && node.props.label === "")).toBe(false)
+    expect(view.nodes.filter(node => node.kind === "text" && node.text === "—").length >= 2).toBe(true)
   })
 
   test("renders unknown peer auto-defaults as ??", () => {
@@ -1311,9 +1398,9 @@ describe("TUI view", () => {
     }
     const view = renderer.render(renderTuiView(state, createNoopTuiActions()))
     const row = view.findById("peer-row-p1")
-    const ip = view.findText("203.0.113.5")
-    expect(row === null || ip === null).toBe(false)
-    if (!row || !ip) throw new Error("missing peer row or IP text")
+    const ip = view.nodes.find(node => node.kind === "link" && "label" in node.props && node.props.label === "203.0.113.5")
+    expect(row === null || ip === undefined).toBe(false)
+    if (!row || !ip) throw new Error("missing peer row or IP link")
     expect(ip.rect.y + ip.rect.h).toBe(row.rect.y + row.rect.h - 1)
   })
 
