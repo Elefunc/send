@@ -198,11 +198,11 @@ describe("CLI surface", () => {
   })
 
   test("room announcements format human-readable output", () => {
-    expect(roomAnnouncement("demo")).toBe("room demo")
+    expect(roomAnnouncement("demo", "alice-12345678")).toBe("room demo\nself alice-12345678")
   })
 
   test("room announcements format json output", () => {
-    expect(roomAnnouncement("demo", true)).toBe(JSON.stringify({ type: "room", room: "demo" }))
+    expect(roomAnnouncement("demo", "alice-12345678", true)).toBe(JSON.stringify({ type: "room", room: "demo", self: "alice-12345678" }))
   })
 
   test("global help lists accept and removes receive", async () => {

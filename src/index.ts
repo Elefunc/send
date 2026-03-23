@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { resolve } from "node:path"
 import { cac, type CAC } from "cac"
-import { cleanRoom } from "./core/protocol"
+import { cleanRoom, displayPeerName } from "./core/protocol"
 import type { SendSession, SessionConfig, SessionEvent } from "./core/session"
 import { resolvePeerTargets } from "./core/targeting"
 import { ensureSessionRuntimePatches, ensureTuiRuntimePatches } from "../runtime/install"
@@ -108,9 +108,10 @@ export const sessionConfigFrom = (options: Record<string, unknown>, defaults: { 
   }
 }
 
-export const roomAnnouncement = (room: string, json = false) => json ? JSON.stringify({ type: "room", room }) : `room ${room}`
+export const roomAnnouncement = (room: string, self: string, json = false) =>
+  json ? JSON.stringify({ type: "room", room, self }) : `room ${room}\nself ${self}`
 
-const printRoomAnnouncement = (room: string, json = false) => console.log(roomAnnouncement(room, json))
+const printRoomAnnouncement = (room: string, self: string, json = false) => console.log(roomAnnouncement(room, self, json))
 
 const printEvent = (event: SessionEvent) => console.log(JSON.stringify(event))
 
@@ -191,7 +192,7 @@ const peersCommand = async (options: Record<string, unknown>) => {
   const { SendSession } = await loadSessionRuntime()
   const session = new SendSession(sessionConfigFrom(options, {}))
   handleSignals(session)
-  printRoomAnnouncement(session.room, !!options.json)
+  printRoomAnnouncement(session.room, displayPeerName(session.name, session.localId), !!options.json)
   await session.connect()
   await Bun.sleep(numberOption(options.wait, 3000))
   const snapshot = session.snapshot()
@@ -218,7 +219,7 @@ const offerCommand = async (files: string[], options: Record<string, unknown>) =
   const { SendSession } = await loadSessionRuntime()
   const session = new SendSession(sessionConfigFrom(options, {}))
   handleSignals(session)
-  printRoomAnnouncement(session.room, !!options.json)
+  printRoomAnnouncement(session.room, displayPeerName(session.name, session.localId), !!options.json)
   const detachReporter = attachReporter(session, !!options.json)
   await session.connect()
   const targets = await waitForTargets(session, selectors, timeoutMs)
@@ -234,7 +235,7 @@ const acceptCommand = async (options: Record<string, unknown>) => {
   const { SendSession } = await loadSessionRuntime()
   const session = new SendSession(sessionConfigFrom(options, { autoAcceptIncoming: true, autoSaveIncoming: true }))
   handleSignals(session)
-  printRoomAnnouncement(session.room, !!options.json)
+  printRoomAnnouncement(session.room, displayPeerName(session.name, session.localId), !!options.json)
   const detachReporter = attachReporter(session, !!options.json)
   await session.connect()
   if (!options.json) console.log(`listening in ${session.room}`)
