@@ -97,6 +97,23 @@ describe("CLI surface", () => {
     })
   })
 
+  test("session config parses --accept and --save binary values", () => {
+    const config = sessionConfigFrom({ accept: "0", save: "1" }, { autoAcceptIncoming: true, autoSaveIncoming: false })
+    expect(config.autoAcceptIncoming).toBe(false)
+    expect(config.autoSaveIncoming).toBe(true)
+  })
+
+  test("session config keeps default accept/save values when flags are omitted", () => {
+    const config = sessionConfigFrom({}, { autoAcceptIncoming: true, autoSaveIncoming: true })
+    expect(config.autoAcceptIncoming).toBe(true)
+    expect(config.autoSaveIncoming).toBe(true)
+  })
+
+  test("session config rejects invalid binary toggle values", () => {
+    expect(throwMessage(() => sessionConfigFrom({ accept: "2" }, { autoAcceptIncoming: true }))).toBe("--accept must be 0 or 1")
+    expect(throwMessage(() => sessionConfigFrom({ save: "maybe" }, { autoSaveIncoming: true }))).toBe("--save must be 0 or 1")
+  })
+
   test("session config parses --self name values", () => {
     const config = sessionConfigFrom({ self: "alice" }, {})
     expect(config.name).toBe("alice")
@@ -262,11 +279,30 @@ describe("CLI surface", () => {
     const output = await captureConsole(() => runCli(["bun", "send", "tui", "--help"]))
     expect(output).toContain("omit to create a random room")
     expect(output).toContain("--self <self>")
+    expect(output).toContain("--clean <0|1>")
+    expect(output).toContain("--accept <0|1>")
+    expect(output).toContain("--offer <0|1>")
+    expect(output).toContain("--save <0|1>")
     expect(output).toContain("name, name-ID, or -ID")
     expect(output).toContain("use --self=-ID")
     expect(output.includes("--name <name>")).toBe(false)
     expect(output).toContain("--events")
     expect(output).toContain("show the event log pane")
+  })
+
+  test("tui command forwards explicit binary toggles", async () => {
+    const { calls, handlers } = createHandlerSpies()
+    await runCli(["bun", "send", "tui", "--clean", "0", "--accept", "0", "--offer", "0", "--save", "0"], handlers)
+    expect(calls).toEqual([{
+      name: "tui",
+      args: [{
+        "--": [],
+        clean: 0,
+        accept: 0,
+        offer: 0,
+        save: 0,
+      }],
+    }])
   })
 
   test("peers help documents optional random rooms", async () => {

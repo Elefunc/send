@@ -1,3 +1,4 @@
+import { resolve } from "node:path"
 import { rgb, ui, type BadgeVariant, type VNode } from "@rezi-ui/core"
 import { createNodeApp } from "@rezi-ui/node"
 import { inspectLocalFile } from "../core/files"
@@ -37,6 +38,7 @@ type DenseSectionOptions = {
   border?: "rounded" | "single" | "none"
   flex?: number
 }
+type TuiLaunchOptions = { events?: boolean; clean?: boolean; offer?: boolean }
 
 export type VisiblePane = "peers" | "transfers" | "logs"
 
@@ -45,6 +47,7 @@ export interface TuiState {
   sessionSeed: SessionSeed
   peerSelectionByRoom: Map<string, Map<string, boolean>>
   snapshot: SessionSnapshot
+  aboutOpen: boolean
   peerSearch: string
   focusedId: string | null
   roomInput: string
@@ -67,6 +70,8 @@ export interface TuiState {
 
 export interface TuiActions {
   toggleEvents: TuiAction
+  openAbout: TuiAction
+  closeAbout: TuiAction
   jumpToRandomRoom: TuiAction
   commitRoom: TuiAction
   setRoomInput: (value: string) => void
@@ -101,11 +106,20 @@ const ROOM_INPUT_ID = "room-input"
 const NAME_INPUT_ID = "name-input"
 const PEER_SEARCH_INPUT_ID = "peer-search-input"
 const DRAFT_INPUT_ID = "draft-input"
+const ABOUT_TRIGGER_ID = "open-about"
 const TRANSPARENT_BORDER_STYLE = { fg: rgb(7, 10, 12) } as const
 const METRIC_BORDER_STYLE = { fg: rgb(20, 25, 32) } as const
 const PRIMARY_TEXT_STYLE = { fg: rgb(255, 255, 255) } as const
 const HEADING_TEXT_STYLE = { fg: rgb(255, 255, 255), bold: true } as const
 const DEFAULT_WEB_URL = "https://send.rt.ht/"
+const DEFAULT_SAVE_DIR = resolve(process.cwd(), "downloads")
+const ABOUT_ELEFUNC_URL = "https://elefunc.com"
+const ABOUT_TITLE = "About Send"
+const ABOUT_INTRO = "Room-based peer-to-peer file transfers for the web and terminal"
+const ABOUT_SUMMARY = "Join the same room, see who is there, and offer files directly to selected peers."
+const ABOUT_RUNTIME = "Send uses lightweight signaling to discover peers and negotiate WebRTC. Files move over WebRTC data channels, using direct paths when possible and TURN relay when needed."
+const ABOUT_CLI_LABEL = "bunx @elefunc/send@latest"
+const ABOUT_WEB_LINK_LABEL = "Web"
 const TRANSFER_DIRECTION_ARROW = {
   out: { glyph: "↗", style: { fg: rgb(170, 217, 76), bold: true } },
   in: { glyph: "↙", style: { fg: rgb(240, 113, 120), bold: true } },
@@ -121,6 +135,45 @@ export const visiblePanes = (showEvents: boolean): VisiblePane[] => showEvents ?
 const noop = () => {}
 
 const hashBool = (value: boolean) => value ? "1" : "0"
+const safeShellArgPattern = /^[A-Za-z0-9._/:?=&,+@%-]+$/
+const TUI_QUIT_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const
+type TuiQuitSignal = (typeof TUI_QUIT_SIGNALS)[number]
+type ProcessSignalLike = {
+  on?: (signal: TuiQuitSignal, handler: () => void) => unknown
+  off?: (signal: TuiQuitSignal, handler: () => void) => unknown
+  removeListener?: (signal: TuiQuitSignal, handler: () => void) => unknown
+}
+type ShareUrlState = Pick<TuiState, "snapshot" | "hideTerminalPeers" | "autoAcceptIncoming" | "autoOfferOutgoing" | "autoSaveIncoming">
+type ShareCliState = ShareUrlState & Pick<TuiState, "sessionSeed" | "eventsExpanded">
+const shellQuote = (value: string) => safeShellArgPattern.test(value) ? value : `'${value.replaceAll("'", `'\"'\"'`)}'`
+const appendCliFlag = (args: string[], flag: string, value?: string | null) => {
+  const text = `${value ?? ""}`.trim()
+  if (!text) return
+  args.push(flag, shellQuote(text))
+}
+const SHARE_TOGGLE_FLAGS = [
+  ["clean", "hideTerminalPeers", "--clean"],
+  ["accept", "autoAcceptIncoming", "--accept"],
+  ["offer", "autoOfferOutgoing", "--offer"],
+  ["save", "autoSaveIncoming", "--save"],
+] as const satisfies readonly (readonly [string, keyof ShareUrlState, string])[]
+const appendToggleCliFlags = (args: string[], state: ShareUrlState) => {
+  for (const [, stateKey, flag] of SHARE_TOGGLE_FLAGS) if (!state[stateKey]) appendCliFlag(args, flag, "0")
+}
+const buildHashParams = (state: ShareUrlState, omitDefaults = false) => {
+  const params = new URLSearchParams({ room: cleanRoom(state.snapshot.room) })
+  for (const [key, stateKey] of SHARE_TOGGLE_FLAGS) if (!omitDefaults || !state[stateKey]) params.set(key, hashBool(state[stateKey]))
+  return params
+}
+const shareTurnCliArgs = (sessionSeed: SessionSeed) => {
+  const turnUrls = [...new Set((sessionSeed.turnUrls ?? []).map(url => `${url ?? ""}`.trim()).filter(Boolean))]
+  if (!turnUrls.length) return []
+  const args: string[] = []
+  for (const turnUrl of turnUrls) appendCliFlag(args, "--turn-url", turnUrl)
+  appendCliFlag(args, "--turn-username", sessionSeed.turnUsername)
+  appendCliFlag(args, "--turn-credential", sessionSeed.turnCredential)
+  return args
+}
 
 export const resolveWebUrlBase = (value = process.env.SEND_WEB_URL) => {
   const candidate = `${value ?? ""}`.trim() || DEFAULT_WEB_URL
@@ -131,23 +184,75 @@ export const resolveWebUrlBase = (value = process.env.SEND_WEB_URL) => {
   }
 }
 
-export const webInviteUrl = (
-  state: Pick<TuiState, "snapshot" | "hideTerminalPeers" | "autoAcceptIncoming" | "autoOfferOutgoing" | "autoSaveIncoming">,
-  baseUrl = resolveWebUrlBase(),
-) => {
+const renderWebUrl = (state: ShareUrlState, baseUrl = DEFAULT_WEB_URL, omitDefaults = true) => {
   const url = new URL(baseUrl)
-  url.hash = new URLSearchParams({
-    room: cleanRoom(state.snapshot.room),
-    clean: hashBool(state.hideTerminalPeers),
-    accept: hashBool(state.autoAcceptIncoming),
-    offer: hashBool(state.autoOfferOutgoing),
-    save: hashBool(state.autoSaveIncoming),
-  }).toString()
+  url.hash = buildHashParams(state, omitDefaults).toString()
   return url.toString()
+}
+const renderCliCommand = (state: ShareCliState, { includeSelf = false, includePrefix = false } = {}) => {
+  const args = includePrefix ? ["bunx", "@elefunc/send@latest"] : []
+  appendCliFlag(args, "--room", state.snapshot.room)
+  if (includeSelf) appendCliFlag(args, "--self", displayPeerName(state.snapshot.name, state.snapshot.localId))
+  appendToggleCliFlags(args, state)
+  if (state.eventsExpanded) args.push("--events")
+  if (resolve(state.snapshot.saveDir) !== DEFAULT_SAVE_DIR) appendCliFlag(args, "--save-dir", state.snapshot.saveDir)
+  args.push(...shareTurnCliArgs(state.sessionSeed))
+  return args.join(" ")
+}
+
+export const webInviteUrl = (state: ShareUrlState, baseUrl = resolveWebUrlBase()) => {
+  return renderWebUrl(state, baseUrl, false)
+}
+
+export const aboutWebUrl = (state: ShareUrlState, baseUrl = DEFAULT_WEB_URL) => renderWebUrl(state, baseUrl)
+
+export const aboutWebLabel = (state: ShareUrlState, baseUrl = DEFAULT_WEB_URL) => aboutWebUrl(state, baseUrl).replace(/^https:\/\//, "")
+
+export const aboutCliCommand = (state: ShareCliState) => renderCliCommand(state)
+
+export const resumeWebUrl = (state: ShareUrlState, baseUrl = DEFAULT_WEB_URL) => renderWebUrl(state, baseUrl)
+
+export const resumeCliCommand = (state: ShareCliState) => renderCliCommand(state, { includeSelf: true, includePrefix: true })
+
+export const resumeOutputLines = (state: ShareCliState) => [
+  "Rejoin with:",
+  "",
+  "Web",
+  resumeWebUrl(state),
+  "",
+  "CLI",
+  resumeCliCommand(state),
+  "",
+]
+
+export const createQuitController = (processLike: ProcessSignalLike | null = process) => {
+  let settled = false
+  let resolvePromise = () => {}
+  const promise = new Promise<void>(resolve => { resolvePromise = resolve })
+  const requestStop = () => {
+    if (settled) return false
+    settled = true
+    resolvePromise()
+    return true
+  }
+  const handler = () => { requestStop() }
+  for (const signal of TUI_QUIT_SIGNALS) processLike?.on?.(signal, handler)
+  return {
+    promise,
+    requestStop,
+    detach: () => {
+      for (const signal of TUI_QUIT_SIGNALS) {
+        processLike?.off?.(signal, handler)
+        processLike?.removeListener?.(signal, handler)
+      }
+    },
+  }
 }
 
 export const createNoopTuiActions = (): TuiActions => ({
   toggleEvents: noop,
+  openAbout: noop,
+  closeAbout: noop,
   jumpToRandomRoom: noop,
   commitRoom: noop,
   setRoomInput: noop,
@@ -481,7 +586,7 @@ export const groupTransfersByPeer = (transfers: TransferSnapshot[], peers: PeerS
   return [...groups.values()]
 }
 
-export const createInitialTuiState = (initialConfig: SessionConfig, showEvents = false): TuiState => {
+export const createInitialTuiState = (initialConfig: SessionConfig, showEvents = false, launchOptions: Pick<TuiLaunchOptions, "clean" | "offer"> = {}): TuiState => {
   const sessionSeed = normalizeSessionSeed(initialConfig)
   const autoAcceptIncoming = initialConfig.autoAcceptIncoming ?? true
   const autoSaveIncoming = initialConfig.autoSaveIncoming ?? true
@@ -493,6 +598,7 @@ export const createInitialTuiState = (initialConfig: SessionConfig, showEvents =
     sessionSeed,
     peerSelectionByRoom,
     snapshot: session.snapshot(),
+    aboutOpen: false,
     peerSearch: "",
     focusedId: null,
     roomInput: sessionSeed.room,
@@ -502,10 +608,10 @@ export const createInitialTuiState = (initialConfig: SessionConfig, showEvents =
     draftInputKeyVersion: 0,
     filePreview: emptyFilePreviewState(),
     drafts: [],
-    autoOfferOutgoing: true,
+    autoOfferOutgoing: launchOptions.offer ?? true,
     autoAcceptIncoming,
     autoSaveIncoming,
-    hideTerminalPeers: true,
+    hideTerminalPeers: launchOptions.clean ?? true,
     eventsExpanded: showEvents,
     offeringDrafts: false,
     notice: { text: "Tab focus", variant: "info" },
@@ -594,8 +700,54 @@ const renderHeaderBrand = () => ui.row({ id: "brand-title", gap: 1, items: "cent
 const renderHeader = (state: TuiState, actions: TuiActions) => denseSection({
   id: "header-shell",
   titleNode: renderHeaderBrand(),
-  actions: [toggleButton("toggle-events", "Events", state.eventsExpanded, actions.toggleEvents)],
+  actions: [
+    toggleButton("toggle-events", "Events", state.eventsExpanded, actions.toggleEvents),
+    actionButton(ABOUT_TRIGGER_ID, "About", actions.openAbout),
+  ],
 }, [])
+
+const renderAboutModal = (state: TuiState, actions: TuiActions) => {
+  const cliCommand = aboutCliCommand(state)
+  const currentWebUrl = aboutWebUrl(state)
+  const currentWebLabel = aboutWebLabel(state)
+  return ui.modal({
+  id: "about-modal",
+  title: ABOUT_TITLE,
+  content: ui.column({ gap: 1 }, [
+    ui.text(ABOUT_INTRO, { id: "about-intro", variant: "heading" }),
+    ui.text(ABOUT_SUMMARY, { id: "about-summary" }),
+    ui.text(ABOUT_RUNTIME, { id: "about-runtime" }),
+    ui.column({ gap: 0 }, [
+      ui.text(ABOUT_CLI_LABEL, { id: "about-cli-label", variant: "caption" }),
+      ui.text(cliCommand, { id: "about-current-cli" }),
+    ]),
+    ui.column({ gap: 0 }, [
+      ui.text(ABOUT_WEB_LINK_LABEL, { id: "about-web-link-label", variant: "caption" }),
+      ui.link({
+        id: "about-current-web-link",
+        label: currentWebLabel,
+        accessibleLabel: "Open current web link",
+        url: currentWebUrl,
+      }),
+    ]),
+  ]),
+  actions: [
+    ui.link({
+      id: "about-elefunc-link",
+      label: "elefunc.com",
+      accessibleLabel: "Open Elefunc website",
+      url: ABOUT_ELEFUNC_URL,
+    }),
+    actionButton("close-about", "Close", actions.closeAbout, "primary"),
+  ],
+  width: 72,
+  maxWidth: 84,
+  minWidth: 54,
+  initialFocus: "close-about",
+  returnFocusTo: ABOUT_TRIGGER_ID,
+  onClose: actions.closeAbout,
+})
+}
 
 const renderRoomCard = (state: TuiState, actions: TuiActions) => denseSection({
   id: "room-card",
@@ -1021,7 +1173,7 @@ export const renderTuiView = (state: TuiState, actions: TuiActions): VNode => {
     gap: 0,
   })
 
-  return state.pendingFocusTarget
+  const basePage = state.pendingFocusTarget
     ? ui.focusTrap({
         id: `focus-request-${state.focusRequestEpoch}`,
         key: `focus-request-${state.focusRequestEpoch}`,
@@ -1029,6 +1181,10 @@ export const renderTuiView = (state: TuiState, actions: TuiActions): VNode => {
         initialFocus: state.pendingFocusTarget,
       }, [page])
     : page
+
+  return state.aboutOpen
+    ? ui.layers([basePage, renderAboutModal(state, actions)])
+    : basePage
 }
 
 const withNotice = (state: TuiState, notice: Notice): TuiState => ({ ...state, notice })
@@ -1043,10 +1199,11 @@ export const withAcceptedDraftInput = (state: TuiState, draftInput: string, file
     focusRequestEpoch: state.focusRequestEpoch + 1,
   }, notice)
 
-export const startTui = async (initialConfig: SessionConfig, showEvents = false) => {
+export const startTui = async (initialConfig: SessionConfig, launchOptions: TuiLaunchOptions = {}) => {
   await installCheckboxClickPatch()
-  const initialState = createInitialTuiState(initialConfig, showEvents)
+  const initialState = createInitialTuiState(initialConfig, !!launchOptions.events, launchOptions)
   const app = createNodeApp<TuiState>({ initialState })
+  const quitController = createQuitController()
   let state = initialState
   let unsubscribe = () => {}
   let stopping = false
@@ -1086,11 +1243,7 @@ export const startTui = async (initialConfig: SessionConfig, showEvents = false)
   const requestStop = () => {
     if (stopping) return
     stopping = true
-    try {
-      process.kill(process.pid, "SIGINT")
-    } catch {
-      void app.stop()
-    }
+    quitController.requestStop()
   }
 
   const resetFilePreview = (overrides: Partial<FilePreviewState> = {}): FilePreviewState => ({
@@ -1368,6 +1521,8 @@ export const startTui = async (initialConfig: SessionConfig, showEvents = false)
 
   const actions: TuiActions = {
     toggleEvents: () => commit(current => ({ ...withNotice(current, { text: current.eventsExpanded ? "Events hidden." : "Events shown.", variant: "info" }), eventsExpanded: !current.eventsExpanded })),
+    openAbout: () => commit(current => ({ ...current, aboutOpen: true })),
+    closeAbout: () => commit(current => ({ ...current, aboutOpen: false })),
     jumpToRandomRoom: () => replaceSession({ ...state.sessionSeed, room: uid(8) }, "Joined a new room."),
     commitRoom,
     setRoomInput: value => commit(current => ({ ...current, roomInput: value })),
@@ -1593,17 +1748,31 @@ export const startTui = async (initialConfig: SessionConfig, showEvents = false)
     stopping = true
     unsubscribe()
     stopPreviewSession()
+    try {
+      await app.stop()
+    } catch {}
     await state.session.close()
+  }
+
+  const printResumeOutput = async () => {
+    const output = `${resumeOutputLines(state).join("\n")}\n`
+    await new Promise<void>(resolve => process.stdout.write(output, () => resolve()))
   }
 
   try {
     bindSession(state.session)
-    await app.run()
+    await app.start()
+    await quitController.promise
   } finally {
     try {
       await stop()
     } finally {
-      app.dispose()
+      try {
+        app.dispose()
+      } finally {
+        await printResumeOutput()
+        quitController.detach()
+      }
     }
   }
 }

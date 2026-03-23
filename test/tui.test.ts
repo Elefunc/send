@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test"
+import { EventEmitter } from "node:events"
 import { tuiRuntime, reziCore } from "./runtime"
 import type { PeerSnapshot, TransferSnapshot } from "../src/core/session"
 import { fallbackName } from "../src/core/protocol"
 
 const { createTestRenderer, rgb, ui } = reziCore
-const { clampFilePreviewSelectedIndex, consumeSatisfiedFocusRequest, createInitialTuiState, createNoopTuiActions, deriveBootFocusState, ensureFilePreviewScrollTop, filePreviewVisible, groupTransfersByPeer, moveFilePreviewSelection, renderTuiView, renderedReadySelectedPeers, resolveWebUrlBase, scheduleBootNameJump, transferSummaryStats, visiblePanes, webInviteUrl, withAcceptedDraftInput } = tuiRuntime
+const { aboutCliCommand, aboutWebLabel, aboutWebUrl, clampFilePreviewSelectedIndex, consumeSatisfiedFocusRequest, createInitialTuiState, createNoopTuiActions, createQuitController, deriveBootFocusState, ensureFilePreviewScrollTop, filePreviewVisible, groupTransfersByPeer, moveFilePreviewSelection, renderTuiView, renderedReadySelectedPeers, resolveWebUrlBase, resumeCliCommand, resumeOutputLines, resumeWebUrl, scheduleBootNameJump, transferSummaryStats, visiblePanes, webInviteUrl, withAcceptedDraftInput } = tuiRuntime
 
 const createWideRenderer = () => createTestRenderer({ viewport: { cols: 180, rows: 60 } })
 const hasRenderedText = (view: ReturnType<ReturnType<typeof createWideRenderer>["render"]>, value: string) =>
@@ -141,8 +142,9 @@ describe("TUI view", () => {
     const label = view.findById("brand-label")
     const roomIcon = view.findById("new-room")
     const events = view.findById("toggle-events")
-    expect(brand === null || icon === null || label === null || roomIcon === null || events === null).toBe(false)
-    if (!brand || !icon || !label || !roomIcon || !events) throw new Error("missing header brand nodes")
+    const about = view.findById("open-about")
+    expect(brand === null || icon === null || label === null || roomIcon === null || events === null || about === null).toBe(false)
+    if (!brand || !icon || !label || !roomIcon || !events || !about) throw new Error("missing header brand nodes")
     expect(brand.kind).toBe("row")
     expect(brand.props.items).toBe("center")
     expect(icon.kind).toBe("button")
@@ -155,6 +157,47 @@ describe("TUI view", () => {
     expect(view.nodes.some(node => node.text === "📤 Send")).toBe(false)
     expect(hasRenderedText(view, "📤")).toBe(true)
     expect(hasRenderedText(view, "Send")).toBe(true)
+    expect(events.rect.x < about.rect.x).toBe(true)
+    expect(about.kind).toBe("button")
+    expect(about.props.label).toBe("About")
+  })
+
+  test("renders an About modal with the shared Send copy and links", () => {
+    const renderer = createWideRenderer()
+    const state = createInitialTuiState({ room: "demo", name: "alice", localId: "12345678", reconnectSocket: false }, false)
+    state.aboutOpen = true
+    const view = renderer.render(renderTuiView(state, createNoopTuiActions()))
+    const modal = view.findById("about-modal")
+    const close = view.findById("close-about")
+    const elefunc = view.findById("about-elefunc-link")
+    const currentWebLink = view.findById("about-current-web-link")
+    expect(modal === null || close === null || elefunc === null || currentWebLink === null).toBe(false)
+    if (!modal || !close || !elefunc || !currentWebLink) throw new Error("missing about modal nodes")
+    expect(modal.kind).toBe("modal")
+    expect(modal.props.title).toBe("About Send")
+    expect(modal.props.initialFocus).toBe("close-about")
+    expect(modal.props.returnFocusTo).toBe("open-about")
+    expect(hasRenderedText(view, "Peer-to-peer file transfer")).toBe(false)
+    expect(hasRenderedText(view, "Room-based peer-to-peer file transfers for the web and terminal")).toBe(true)
+    expect(hasRenderedText(view, "Join the same room, see who is there, and offer files directly to selected peers.")).toBe(true)
+    expect(hasRenderedText(view, "Send uses lightweight signaling to discover peers and negotiate WebRTC. Files move over WebRTC data channels, using direct paths when possible and TURN relay when needed.")).toBe(true)
+    expect(hasRenderedText(view, "bunx @elefunc/send@latest")).toBe(true)
+    expect(hasRenderedText(view, "--room demo")).toBe(true)
+    expect(hasRenderedText(view, "Web")).toBe(true)
+    expect(hasRenderedText(view, "--self alice-12345678")).toBe(false)
+    expect(hasRenderedText(view, "Elefunc, Inc.")).toBe(false)
+    expect(hasRenderedText(view, "What it is")).toBe(false)
+    expect(hasRenderedText(view, "What it does")).toBe(false)
+    expect(hasRenderedText(view, "How it works")).toBe(false)
+    expect(hasRenderedText(view, "Who made it")).toBe(false)
+    expect(hasRenderedText(view, "Under the hood")).toBe(false)
+    expect(elefunc.kind).toBe("link")
+    expect(elefunc.props.url).toBe("https://elefunc.com")
+    expect(currentWebLink.kind).toBe("link")
+    expect(currentWebLink.props.label).toBe("send.rt.ht/#room=demo")
+    expect(currentWebLink.props.url).toBe("https://send.rt.ht/#room=demo")
+    expect(close.kind).toBe("button")
+    expect(close.props.label).toBe("Close")
   })
 
   test("renders a compact footer key-hint strip on the right", () => {
@@ -360,6 +403,113 @@ describe("TUI view", () => {
       expect(resolveWebUrlBase()).toBe("https://send.rt.ht/")
       expect(webInviteUrl(state)).toBe("https://send.rt.ht/#room=demo&clean=1&accept=1&offer=1&save=1")
     })
+  })
+
+  test("omits default values from the About web link and CLI command, but keeps room", () => {
+    const state = createInitialTuiState({ room: "demo", name: "alice", localId: "12345678", reconnectSocket: false }, false)
+    expect(aboutWebUrl(state)).toBe("https://send.rt.ht/#room=demo")
+    expect(aboutWebLabel(state)).toBe("send.rt.ht/#room=demo")
+    expect(aboutCliCommand(state)).toBe("--room demo")
+  })
+
+  test("includes only non-default current values in the About web link and CLI command", () => {
+    const state = createInitialTuiState({
+      room: "demo",
+      name: "alice",
+      localId: "12345678",
+      reconnectSocket: false,
+      saveDir: "/tmp/send files",
+      turnUrls: ["turn:turn.example.com:3478", "turns:turn.example.com:5349?transport=tcp"],
+      turnUsername: "user",
+      turnCredential: "pass",
+    }, false)
+    state.hideTerminalPeers = false
+    state.autoAcceptIncoming = false
+    state.autoOfferOutgoing = false
+    state.autoSaveIncoming = false
+    state.eventsExpanded = true
+    expect(aboutWebUrl(state)).toBe("https://send.rt.ht/#room=demo&clean=0&accept=0&offer=0&save=0")
+    expect(aboutCliCommand(state)).toBe("--room demo --clean 0 --accept 0 --offer 0 --save 0 --events --save-dir '/tmp/send files' --turn-url turn:turn.example.com:3478 --turn-url turns:turn.example.com:5349?transport=tcp --turn-username user --turn-credential pass")
+  })
+
+  test("does not include peer-shared TURN in the About CLI command", () => {
+    const state = createInitialTuiState({ room: "demo", name: "alice", localId: "12345678", reconnectSocket: false }, false)
+    state.snapshot = { ...state.snapshot, turnState: "idle", turn: "idle" }
+    expect(aboutCliCommand(state)).toBe("--room demo")
+  })
+
+  test("prints full revival web and CLI outputs for TUI exit", () => {
+    const state = createInitialTuiState({
+      room: "demo",
+      name: "alice",
+      localId: "12345678",
+      reconnectSocket: false,
+      saveDir: "/tmp/send files",
+      turnUrls: ["turn:turn.example.com:3478"],
+      turnUsername: "user",
+      turnCredential: "pass",
+    }, true)
+    state.hideTerminalPeers = false
+    state.autoAcceptIncoming = false
+    state.autoOfferOutgoing = false
+    state.autoSaveIncoming = false
+
+    expect(resumeWebUrl(state)).toBe("https://send.rt.ht/#room=demo&clean=0&accept=0&offer=0&save=0")
+    expect(resumeCliCommand(state)).toBe("bunx @elefunc/send@latest --room demo --self alice-12345678 --clean 0 --accept 0 --offer 0 --save 0 --events --save-dir '/tmp/send files' --turn-url turn:turn.example.com:3478 --turn-username user --turn-credential pass")
+    expect(resumeOutputLines(state)).toEqual([
+      "Rejoin with:",
+      "",
+      "Web",
+      "https://send.rt.ht/#room=demo&clean=0&accept=0&offer=0&save=0",
+      "",
+      "CLI",
+      "bunx @elefunc/send@latest --room demo --self alice-12345678 --clean 0 --accept 0 --offer 0 --save 0 --events --save-dir '/tmp/send files' --turn-url turn:turn.example.com:3478 --turn-username user --turn-credential pass",
+      "",
+    ])
+  })
+
+  test("does not include peer-shared TURN in the TUI exit revival CLI output", () => {
+    const state = createInitialTuiState({ room: "demo", name: "alice", localId: "12345678", reconnectSocket: false }, false)
+    state.snapshot = { ...state.snapshot, turnState: "idle", turn: "idle" }
+
+    expect(resumeWebUrl(state)).toBe("https://send.rt.ht/#room=demo")
+    expect(resumeCliCommand(state)).toBe("bunx @elefunc/send@latest --room demo --self alice-12345678")
+    expect(resumeOutputLines(state)).toEqual([
+      "Rejoin with:",
+      "",
+      "Web",
+      "https://send.rt.ht/#room=demo",
+      "",
+      "CLI",
+      "bunx @elefunc/send@latest --room demo --self alice-12345678",
+      "",
+    ])
+  })
+
+  test("quit controller resolves from terminal signals and detaches listeners", async () => {
+    const processLike = new EventEmitter() as EventEmitter & {
+      on: (signal: "SIGINT" | "SIGTERM" | "SIGHUP", handler: () => void) => unknown
+      off: (signal: "SIGINT" | "SIGTERM" | "SIGHUP", handler: () => void) => unknown
+    }
+    processLike.off = processLike.removeListener.bind(processLike)
+    const quit = createQuitController(processLike)
+
+    processLike.emit("SIGINT")
+    await quit.promise
+    expect(quit.requestStop()).toBe(false)
+    expect(processLike.listenerCount("SIGINT")).toBe(1)
+
+    quit.detach()
+    expect(processLike.listenerCount("SIGINT")).toBe(0)
+    expect(processLike.listenerCount("SIGTERM")).toBe(0)
+    expect(processLike.listenerCount("SIGHUP")).toBe(0)
+  })
+
+  test("quit controller resolves only once for repeated local stop requests", async () => {
+    const quit = createQuitController(null)
+    expect(quit.requestStop()).toBe(true)
+    expect(quit.requestStop()).toBe(false)
+    await quit.promise
   })
 
   test("renders grouped file actions with gaps between Offer, Accept|Save, and Clear", () => {

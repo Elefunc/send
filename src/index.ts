@@ -37,11 +37,45 @@ const waitPeerTimeout = (value: unknown) => {
   if (!Number.isFinite(parsed) || parsed < 0) throw new ExitError("--wait-peer must be a finite non-negative number of milliseconds", 1)
   return parsed
 }
+const BINARY_OPTION_FLAGS = {
+  clean: "--clean",
+  accept: "--accept",
+  offer: "--offer",
+  save: "--save",
+} as const
+type BinaryOptionKey = keyof typeof BINARY_OPTION_FLAGS
+const binaryOption = (value: unknown, flag: string) => {
+  if (value == null) return undefined
+  if (value === 1 || value === "1") return true
+  if (value === 0 || value === "0") return false
+  throw new ExitError(`${flag} must be 0 or 1`, 1)
+}
+const parseBinaryOptions = <K extends BinaryOptionKey>(options: Record<string, unknown>, keys: readonly K[]) =>
+  Object.fromEntries(keys.map(key => [key, binaryOption(options[key], BINARY_OPTION_FLAGS[key])])) as Record<K, boolean | undefined>
 
 const SELF_ID_LENGTH = 8
 const SELF_ID_PATTERN = new RegExp(`^[a-z0-9]{${SELF_ID_LENGTH}}$`)
 const SELF_HELP_TEXT = "self identity: name, name-ID, or -ID (use --self=-ID)"
 const INVALID_SELF_ID_MESSAGE = `--self ID suffix must be exactly ${SELF_ID_LENGTH} lowercase alphanumeric characters`
+type CliCommand = ReturnType<CAC["command"]>
+const ROOM_SELF_OPTIONS = [
+  ["--room <room>", "room id; omit to create a random room"],
+  ["--self <self>", SELF_HELP_TEXT],
+] as const
+const TURN_OPTIONS = [
+  ["--turn-url <url>", "custom TURN url, repeat or comma-separate"],
+  ["--turn-username <value>", "custom TURN username"],
+  ["--turn-credential <value>", "custom TURN credential"],
+] as const
+const SAVE_DIR_OPTION = ["--save-dir <dir>", "save directory"] as const
+const TUI_TOGGLE_OPTIONS = [
+  ["--clean <0|1>", "show only active peers when 1; show terminal peers too when 0"],
+  ["--accept <0|1>", "auto-accept incoming offers: 1 on, 0 off"],
+  ["--offer <0|1>", "auto-offer drafts to matching ready peers: 1 on, 0 off"],
+  ["--save <0|1>", "auto-save completed incoming files: 1 on, 0 off"],
+] as const
+const addOptions = (command: CliCommand, definitions: readonly (readonly [string, string])[]) =>
+  definitions.reduce((next, [flag, description]) => next.option(flag, description), command)
 
 const requireSelfId = (value: string) => {
   if (!SELF_ID_PATTERN.test(value)) throw new ExitError(INVALID_SELF_ID_MESSAGE, 1)
@@ -61,12 +95,13 @@ const parseSelfOption = (value: unknown): Pick<SessionConfig, "name" | "localId"
 export const sessionConfigFrom = (options: Record<string, unknown>, defaults: { autoAcceptIncoming?: boolean; autoSaveIncoming?: boolean }): SessionConfig & { room: string } => {
   const room = cleanRoom(firstNonEmptyText(options.room, process.env.SEND_ROOM))
   const self = parseSelfOption(options.self ?? process.env.SEND_SELF)
+  const { accept, save } = parseBinaryOptions(options, ["accept", "save"] as const)
   return {
     room,
     ...self,
     saveDir: resolve(`${options.saveDir ?? process.env.SEND_SAVE_DIR ?? "downloads"}`),
-    autoAcceptIncoming: defaults.autoAcceptIncoming ?? false,
-    autoSaveIncoming: defaults.autoSaveIncoming ?? false,
+    autoAcceptIncoming: accept ?? defaults.autoAcceptIncoming ?? false,
+    autoSaveIncoming: save ?? defaults.autoSaveIncoming ?? false,
     turnUrls: splitList(options.turnUrl ?? process.env.SEND_TURN_URL),
     turnUsername: `${options.turnUsername ?? process.env.SEND_TURN_USERNAME ?? ""}`.trim() || undefined,
     turnCredential: `${options.turnCredential ?? process.env.SEND_TURN_CREDENTIAL ?? ""}`.trim() || undefined,
@@ -218,8 +253,13 @@ const acceptCommand = async (options: Record<string, unknown>) => {
 
 const tuiCommand = async (options: Record<string, unknown>) => {
   const initialConfig = sessionConfigFrom(options, { autoAcceptIncoming: true, autoSaveIncoming: true })
+  const { clean, offer } = parseBinaryOptions(options, ["clean", "offer"] as const)
   const { startTui } = await loadTuiRuntime()
-  await startTui(initialConfig, !!options.events)
+  await startTui(initialConfig, {
+    events: !!options.events,
+    clean: clean ?? true,
+    offer: offer ?? true,
+  })
 }
 
 type CliHandlers = {
@@ -240,53 +280,38 @@ export const createCli = (handlers: CliHandlers = defaultCliHandlers) => {
   const cli = cac("send")
   cli.usage("[command] [options]")
 
-  cli
-    .command("peers", "list discovered peers")
-    .option("--room <room>", "room id; omit to create a random room")
-    .option("--self <self>", SELF_HELP_TEXT)
-    .option("--wait <ms>", "discovery wait in milliseconds")
-    .option("--json", "print a json snapshot")
-    .option("--save-dir <dir>", "save directory")
-    .option("--turn-url <url>", "custom TURN url, repeat or comma-separate")
-    .option("--turn-username <value>", "custom TURN username")
-    .option("--turn-credential <value>", "custom TURN credential")
-    .action(handlers.peers)
+  addOptions(cli.command("peers", "list discovered peers"), [
+    ...ROOM_SELF_OPTIONS,
+    ["--wait <ms>", "discovery wait in milliseconds"],
+    ["--json", "print a json snapshot"],
+    SAVE_DIR_OPTION,
+    ...TURN_OPTIONS,
+  ]).action(handlers.peers)
 
-  cli
-    .command("offer [...files]", "offer files to browser-compatible peers")
-    .option("--room <room>", "room id; omit to create a random room")
-    .option("--self <self>", SELF_HELP_TEXT)
-    .option("--to <peer>", "target peer id or name-suffix, or `.` for all ready peers; default: `.`")
-    .option("--wait-peer <ms>", "wait for eligible peers in milliseconds; omit to wait indefinitely")
-    .option("--json", "emit ndjson events")
-    .option("--save-dir <dir>", "save directory")
-    .option("--turn-url <url>", "custom TURN url, repeat or comma-separate")
-    .option("--turn-username <value>", "custom TURN username")
-    .option("--turn-credential <value>", "custom TURN credential")
-    .action(handlers.offer)
+  addOptions(cli.command("offer [...files]", "offer files to browser-compatible peers"), [
+    ...ROOM_SELF_OPTIONS,
+    ["--to <peer>", "target peer id or name-suffix, or `.` for all ready peers; default: `.`"],
+    ["--wait-peer <ms>", "wait for eligible peers in milliseconds; omit to wait indefinitely"],
+    ["--json", "emit ndjson events"],
+    SAVE_DIR_OPTION,
+    ...TURN_OPTIONS,
+  ]).action(handlers.offer)
 
-  cli
-    .command("accept", "receive and save files")
-    .option("--room <room>", "room id; omit to create a random room")
-    .option("--self <self>", SELF_HELP_TEXT)
-    .option("--save-dir <dir>", "save directory")
-    .option("--once", "exit after the first saved incoming transfer")
-    .option("--json", "emit ndjson events")
-    .option("--turn-url <url>", "custom TURN url, repeat or comma-separate")
-    .option("--turn-username <value>", "custom TURN username")
-    .option("--turn-credential <value>", "custom TURN credential")
-    .action(handlers.accept)
+  addOptions(cli.command("accept", "receive and save files"), [
+    ...ROOM_SELF_OPTIONS,
+    SAVE_DIR_OPTION,
+    ["--once", "exit after the first saved incoming transfer"],
+    ["--json", "emit ndjson events"],
+    ...TURN_OPTIONS,
+  ]).action(handlers.accept)
 
-  cli
-    .command("tui", "launch the interactive terminal UI")
-    .option("--room <room>", "room id; omit to create a random room")
-    .option("--self <self>", SELF_HELP_TEXT)
-    .option("--events", "show the event log pane")
-    .option("--save-dir <dir>", "save directory")
-    .option("--turn-url <url>", "custom TURN url, repeat or comma-separate")
-    .option("--turn-username <value>", "custom TURN username")
-    .option("--turn-credential <value>", "custom TURN credential")
-    .action(handlers.tui)
+  addOptions(cli.command("tui", "launch the interactive terminal UI"), [
+    ...ROOM_SELF_OPTIONS,
+    ...TUI_TOGGLE_OPTIONS,
+    ["--events", "show the event log pane"],
+    SAVE_DIR_OPTION,
+    ...TURN_OPTIONS,
+  ]).action(handlers.tui)
 
   cli.help(sections => {
     const usage = sections.find(section => section.title === "Usage:")
