@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test"
-import { mkdir, rm } from "node:fs/promises"
+import { access, mkdir, readFile, rm } from "node:fs/promises"
 import { join } from "node:path"
 import { sessionRuntime } from "./runtime"
 
 const { SendSession, SessionAbortedError, connectivitySnapshotFromPeerConnection, probeIcePairConsentRtt, localProfileFromResponse } = sessionRuntime
+const exists = async (path: string) => access(path).then(() => true, () => false)
 
 const incomingTransfer = (overrides: Record<string, unknown> = {}) => ({
   id: "t1",
@@ -535,6 +536,137 @@ describe("SendSession mutators", () => {
     expect(saved).toBe(1)
     expect(transfer.savedAt > 0).toBe(true)
     expect(transfer.savedPath.endsWith("hello.txt")).toBe(true)
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  test("streams auto-saved incoming transfers straight to disk from receive start", async () => {
+    const dir = join(process.cwd(), ".tmp-send-session-stream")
+    await rm(dir, { recursive: true, force: true })
+    await mkdir(dir, { recursive: true })
+    const events: any[] = []
+    const session = new SendSession({ room: "demo", saveDir: dir, reconnectSocket: false, autoAcceptIncoming: true, autoSaveIncoming: true }) as any
+    const peer = readyPeer()
+    session.peers.set("p1", peer)
+    session.onEvent((event: any) => events.push(event))
+
+    await session.handleTransferControl(peer, { kind: "file-offer", transferId: "t1", name: "hello.txt", size: 5, type: "text/plain", lastModified: 0, chunkSize: 3, totalChunks: 2, to: session.localId })
+    const transfer = session.transfers.get("t1")
+    expect(transfer.status).toBe("accepted")
+    expect(transfer.incomingDisk?.tempPath).toContain("hello.txt.part.")
+    await session.handleTransferControl(peer, { kind: "file-start", transferId: "t1", to: session.localId })
+
+    expect(transfer.status).toBe("receiving")
+    session.onBinary(peer, Buffer.from("hel"))
+    session.onBinary(peer, Buffer.from("lo"))
+    await session.handleTransferControl(peer, { kind: "file-end", transferId: "t1", size: 5, totalChunks: 2, to: session.localId })
+
+    expect(transfer.status).toBe("complete")
+    expect(transfer.savedAt > 0).toBe(true)
+    expect(transfer.savedPath.endsWith("hello.txt")).toBe(true)
+    expect(transfer.data).toBe(undefined)
+    expect(transfer.buffers).toBe(undefined)
+    expect(transfer.incomingDisk).toBe(undefined)
+    expect(await readFile(transfer.savedPath, "utf8")).toBe("hello")
+    expect(events.some(event => event.type === "saved" && event.transfer.id === "t1" && event.transfer.savedPath === transfer.savedPath)).toBe(true)
+
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  test("cleans up a pre-armed direct-to-disk temp file when an accepted transfer fails before file-start", async () => {
+    const dir = join(process.cwd(), ".tmp-send-session-stream-prestart-fail")
+    await rm(dir, { recursive: true, force: true })
+    await mkdir(dir, { recursive: true })
+    const session = new SendSession({ room: "demo", saveDir: dir, reconnectSocket: false, autoAcceptIncoming: true, autoSaveIncoming: true }) as any
+    const peer = readyPeer()
+    session.peers.set("p1", peer)
+
+    await session.handleTransferControl(peer, { kind: "file-offer", transferId: "t1", name: "hello.txt", size: 5, type: "text/plain", lastModified: 0, chunkSize: 3, totalChunks: 2, to: session.localId })
+    const transfer = session.transfers.get("t1")
+    const tempPath = transfer.incomingDisk?.tempPath
+
+    expect(transfer.status).toBe("accepted")
+    expect(tempPath ? await exists(tempPath) : false).toBe(true)
+    await session.handleTransferControl(peer, { kind: "file-error", transferId: "t1", reason: "failed", to: session.localId })
+    await Bun.sleep(50)
+
+    expect(transfer.status).toBe("error")
+    expect(tempPath ? await exists(tempPath) : false).toBe(false)
+    expect(transfer.savedPath).toBe(undefined)
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  test("removes partial direct-to-disk files when an incoming streamed transfer fails", async () => {
+    const dir = join(process.cwd(), ".tmp-send-session-stream-fail")
+    await rm(dir, { recursive: true, force: true })
+    await mkdir(dir, { recursive: true })
+    const session = new SendSession({ room: "demo", saveDir: dir, reconnectSocket: false, autoAcceptIncoming: true, autoSaveIncoming: true }) as any
+    const peer = readyPeer()
+    session.peers.set("p1", peer)
+
+    await session.handleTransferControl(peer, { kind: "file-offer", transferId: "t1", name: "hello.txt", size: 5, type: "text/plain", lastModified: 0, chunkSize: 5, totalChunks: 1, to: session.localId })
+    await session.handleTransferControl(peer, { kind: "file-start", transferId: "t1", to: session.localId })
+    const transfer = session.transfers.get("t1")
+    const tempPath = transfer.incomingDisk?.tempPath
+    session.onBinary(peer, Buffer.from("hel"))
+    await session.handleTransferControl(peer, { kind: "file-error", transferId: "t1", reason: "failed", to: session.localId })
+    await Bun.sleep(50)
+
+    expect(transfer.status).toBe("error")
+    expect(tempPath ? await exists(tempPath) : false).toBe(false)
+    expect(transfer.savedPath).toBe(undefined)
+
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  test("falls back to memory buffering when direct-to-disk startup fails before writing begins", async () => {
+    const dir = join(process.cwd(), ".tmp-send-session-stream-fallback")
+    await rm(dir, { recursive: true, force: true })
+    await mkdir(dir, { recursive: true })
+    const session = new SendSession({ room: "demo", saveDir: dir, reconnectSocket: false, autoAcceptIncoming: true, autoSaveIncoming: true }) as any
+    const peer = readyPeer()
+    session.peers.set("p1", peer)
+    session.createIncomingDiskState = async () => {
+      throw new Error("disk unavailable")
+    }
+
+    await session.handleTransferControl(peer, { kind: "file-offer", transferId: "t1", name: "hello.txt", size: 5, type: "text/plain", lastModified: 0, chunkSize: 5, totalChunks: 1, to: session.localId })
+    await session.handleTransferControl(peer, { kind: "file-start", transferId: "t1", to: session.localId })
+    const transfer = session.transfers.get("t1")
+
+    session.onBinary(peer, Buffer.from("hello"))
+    await session.handleTransferControl(peer, { kind: "file-end", transferId: "t1", size: 5, totalChunks: 1, to: session.localId })
+    await Bun.sleep(50)
+
+    expect(transfer.status).toBe("complete")
+    expect(transfer.incomingDisk).toBe(undefined)
+    expect(transfer.data?.toString("utf8")).toBe("hello")
+    expect(transfer.savedPath.endsWith("hello.txt")).toBe(true)
+
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  test("keeps an active incoming transfer memory-buffered when auto-save turns on mid-transfer", async () => {
+    const dir = join(process.cwd(), ".tmp-send-session-mid-save")
+    await rm(dir, { recursive: true, force: true })
+    await mkdir(dir, { recursive: true })
+    const session = new SendSession({ room: "demo", saveDir: dir, reconnectSocket: false, autoAcceptIncoming: true, autoSaveIncoming: false }) as any
+    const peer = readyPeer()
+    session.peers.set("p1", peer)
+
+    await session.handleTransferControl(peer, { kind: "file-offer", transferId: "t1", name: "hello.txt", size: 5, type: "text/plain", lastModified: 0, chunkSize: 5, totalChunks: 1, to: session.localId })
+    await session.handleTransferControl(peer, { kind: "file-start", transferId: "t1", to: session.localId })
+    const transfer = session.transfers.get("t1")
+
+    expect(transfer.incomingDisk).toBe(undefined)
+    await session.setAutoSaveIncoming(true)
+    session.onBinary(peer, Buffer.from("hello"))
+    await session.handleTransferControl(peer, { kind: "file-end", transferId: "t1", size: 5, totalChunks: 1, to: session.localId })
+    await Bun.sleep(50)
+
+    expect(transfer.data?.toString("utf8")).toBe("hello")
+    expect(transfer.savedAt > 0).toBe(true)
+    expect(transfer.savedPath.endsWith("hello.txt")).toBe(true)
+
     await rm(dir, { recursive: true, force: true })
   })
 

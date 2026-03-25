@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdir, rm } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
-import { inspectLocalFile, inspectLocalPaths, saveIncomingFile } from "../src/core/files"
+import { closeLocalFile, inspectLocalFile, inspectLocalPaths, loadLocalFile, readFileChunk, saveIncomingFile, writeFileChunk } from "../src/core/files"
 
 describe("saveIncomingFile", () => {
   test("creates collision-safe file names", async () => {
@@ -14,6 +14,62 @@ describe("saveIncomingFile", () => {
     expect(first.endsWith("hello.txt")).toBe(true)
     expect(second.endsWith("hello (1).txt")).toBe(true)
     await rm(dir, { recursive: true, force: true })
+  })
+})
+
+describe("readFileChunk", () => {
+  test("reads the exact requested byte ranges", async () => {
+    const dir = join(process.cwd(), ".tmp-send-cli-read-chunk")
+    await rm(dir, { recursive: true, force: true })
+    await mkdir(dir, { recursive: true })
+    const path = join(dir, "hello.bin")
+    const data = Buffer.alloc(150_123)
+    for (let index = 0; index < data.length; index += 1) data[index] = index % 251
+    await Bun.write(path, data)
+
+    const file = await loadLocalFile(path)
+    const chunks: Buffer[] = []
+    for (let offset = 0; offset < file.size; offset += 65536) chunks.push(await readFileChunk(file, offset, 65536))
+
+    expect(Buffer.concat(chunks)).toEqual(data)
+    await closeLocalFile(file)
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  test("retries short reads until the requested chunk is filled", async () => {
+    const source = Buffer.from("hello")
+    const file = {
+      path: "",
+      name: "hello.txt",
+      size: source.byteLength,
+      type: "text/plain",
+      lastModified: 0,
+      reader: {
+        read: async (chunk: Buffer, start: number, length: number, position: number) => {
+          const bytesRead = Math.min(2, length, Math.max(0, source.byteLength - position))
+          if (bytesRead) source.copy(chunk, start, position, position + bytesRead)
+          return { bytesRead, buffer: chunk }
+        },
+      },
+    } as any
+
+    expect(await readFileChunk(file, 0, source.byteLength)).toEqual(source)
+  })
+})
+
+describe("writeFileChunk", () => {
+  test("retries short writes until the whole buffer is written", async () => {
+    const target = Buffer.alloc(5)
+    const handle = {
+      write: async (data: Buffer, start: number, length: number, position: number) => {
+        const bytesWritten = Math.min(2, length)
+        data.copy(target, position, start, start + bytesWritten)
+        return { bytesWritten, buffer: data }
+      },
+    } as any
+
+    expect(await writeFileChunk(handle, Buffer.from("hello"), 0)).toBe(5)
+    expect(target.toString("utf8")).toBe("hello")
   })
 })
 

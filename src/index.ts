@@ -74,6 +74,7 @@ const TUI_TOGGLE_OPTIONS = [
   ["--offer <0|1>", "auto-offer drafts to matching ready peers: 1 on, 0 off"],
   ["--save <0|1>", "auto-save completed incoming files: 1 on, 0 off"],
 ] as const
+export const ACCEPT_SESSION_DEFAULTS = { autoAcceptIncoming: true, autoSaveIncoming: true } as const
 const addOptions = (command: CliCommand, definitions: readonly (readonly [string, string])[]) =>
   definitions.reduce((next, [flag, description]) => next.option(flag, description), command)
 
@@ -233,7 +234,7 @@ const offerCommand = async (files: string[], options: Record<string, unknown>) =
 
 const acceptCommand = async (options: Record<string, unknown>) => {
   const { SendSession } = await loadSessionRuntime()
-  const session = new SendSession(sessionConfigFrom(options, { autoAcceptIncoming: true, autoSaveIncoming: true }))
+  const session = new SendSession(sessionConfigFrom(options, ACCEPT_SESSION_DEFAULTS))
   handleSignals(session)
   printRoomAnnouncement(session.room, displayPeerName(session.name, session.localId), !!options.json)
   const detachReporter = attachReporter(session, !!options.json)
@@ -253,7 +254,7 @@ const acceptCommand = async (options: Record<string, unknown>) => {
 }
 
 const tuiCommand = async (options: Record<string, unknown>) => {
-  const initialConfig = sessionConfigFrom(options, { autoAcceptIncoming: true, autoSaveIncoming: true })
+  const initialConfig = sessionConfigFrom(options, ACCEPT_SESSION_DEFAULTS)
   const { clean, offer } = parseBinaryOptions(options, ["clean", "offer"] as const)
   const { startTui } = await loadTuiRuntime()
   await startTui(initialConfig, {

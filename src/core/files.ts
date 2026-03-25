@@ -1,4 +1,4 @@
-import { access, mkdir, stat } from "node:fs/promises"
+import { access, mkdir, open, rm, stat, type FileHandle } from "node:fs/promises"
 import { basename, extname, join, resolve } from "node:path"
 import { resolveUserPath } from "./paths"
 
@@ -8,16 +8,16 @@ export interface LocalFile {
   size: number
   type: string
   lastModified: number
-  blob: Blob
+  reader?: FileHandle
 }
 
-export type LocalFileInfo = Omit<LocalFile, "blob">
+export type LocalFileInfo = Omit<LocalFile, "reader">
 export interface LocalPathIssue {
   path: string
   error: string
 }
 
-const exists = async (path: string) => access(path).then(() => true, () => false)
+export const pathExists = async (path: string) => access(path).then(() => true, () => false)
 
 export const inspectLocalFile = async (path: string): Promise<LocalFileInfo> => {
   const absolute = resolveUserPath(path)
@@ -52,23 +52,52 @@ export const inspectLocalPaths = async (paths: string[]) => {
 
 export const loadLocalFile = async (path: string): Promise<LocalFile> => {
   const info = await inspectLocalFile(path)
-  return {
-    ...info,
-    blob: Bun.file(info.path),
-  }
+  return { ...info }
 }
 
 export const loadLocalFiles = (paths: string[]) => Promise.all(paths.map(loadLocalFile))
 
-export const readFileChunk = async (file: LocalFile, offset: number, size: number) => Buffer.from(await file.blob.slice(offset, offset + size).arrayBuffer())
+const readHandleChunk = async (handle: FileHandle, offset: number, size: number) => {
+  const chunk = Buffer.allocUnsafe(size)
+  let bytesReadTotal = 0
+  while (bytesReadTotal < size) {
+    const { bytesRead } = await handle.read(chunk, bytesReadTotal, size - bytesReadTotal, offset + bytesReadTotal)
+    if (!bytesRead) break
+    bytesReadTotal += bytesRead
+  }
+  return bytesReadTotal === size ? chunk : chunk.subarray(0, bytesReadTotal)
+}
 
-export const uniqueOutputPath = async (directory: string, fileName: string) => {
+export const readFileChunk = async (file: LocalFile, offset: number, size: number) => {
+  file.reader ||= await open(file.path, "r")
+  return readHandleChunk(file.reader, offset, size)
+}
+
+export const closeLocalFile = async (file?: LocalFile) => {
+  if (!file?.reader) return
+  const reader = file.reader
+  file.reader = undefined
+  await reader.close()
+}
+
+export const writeFileChunk = async (handle: FileHandle, data: Buffer, offset: number) => {
+  let bytesWrittenTotal = 0
+  while (bytesWrittenTotal < data.byteLength) {
+    const { bytesWritten } = await handle.write(data, bytesWrittenTotal, data.byteLength - bytesWrittenTotal, offset + bytesWrittenTotal)
+    if (!bytesWritten) throw new Error("short write")
+    bytesWrittenTotal += bytesWritten
+  }
+  return bytesWrittenTotal
+}
+
+export const uniqueOutputPath = async (directory: string, fileName: string, reservedPaths: ReadonlySet<string> = new Set()) => {
   await mkdir(directory, { recursive: true })
   const extension = extname(fileName)
   const stem = extension ? fileName.slice(0, -extension.length) : fileName
   for (let index = 0; ; index += 1) {
     const candidate = join(directory, index ? `${stem} (${index})${extension}` : fileName)
-    if (!await exists(candidate)) return candidate
+    if (reservedPaths.has(candidate)) continue
+    if (!await pathExists(candidate)) return candidate
   }
 }
 
@@ -76,4 +105,8 @@ export const saveIncomingFile = async (directory: string, fileName: string, data
   const path = await uniqueOutputPath(directory, fileName)
   await Bun.write(path, data)
   return path
+}
+
+export const removePath = async (path: string) => {
+  await rm(path, { force: true }).catch(() => {})
 }

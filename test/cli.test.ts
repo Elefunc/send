@@ -1,6 +1,6 @@
 import { resolve } from "node:path"
 import { describe, expect, test } from "bun:test"
-import { createCli, roomAnnouncement, runCli, sessionConfigFrom } from "../src/index"
+import { ACCEPT_SESSION_DEFAULTS, createCli, roomAnnouncement, runCli, sessionConfigFrom } from "../src/index"
 
 const captureConsole = async (fn: () => Promise<unknown> | unknown) => {
   const messages: string[] = []
@@ -106,6 +106,12 @@ describe("CLI surface", () => {
 
   test("session config keeps default accept/save values when flags are omitted", () => {
     const config = sessionConfigFrom({}, { autoAcceptIncoming: true, autoSaveIncoming: true })
+    expect(config.autoAcceptIncoming).toBe(true)
+    expect(config.autoSaveIncoming).toBe(true)
+  })
+
+  test("accept command defaults keep streaming receive enabled", () => {
+    const config = sessionConfigFrom({}, ACCEPT_SESSION_DEFAULTS)
     expect(config.autoAcceptIncoming).toBe(true)
     expect(config.autoSaveIncoming).toBe(true)
   })

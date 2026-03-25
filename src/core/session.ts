@@ -1,7 +1,8 @@
+import { open, rename, type FileHandle } from "node:fs/promises"
 import { resolve } from "node:path"
 import type { RTCDataChannel, RTCIceCandidateInit, RTCIceServer } from "werift"
 import { RTCPeerConnection } from "werift"
-import { loadLocalFiles, readFileChunk, saveIncomingFile, type LocalFile } from "./files"
+import { closeLocalFile, loadLocalFiles, pathExists, readFileChunk, removePath, saveIncomingFile, uniqueOutputPath, writeFileChunk, type LocalFile } from "./files"
 import {
   BASE_ICE_SERVERS,
   BUFFER_HIGH,
@@ -87,10 +88,21 @@ interface TransferState {
   file?: LocalFile
   buffers?: Buffer[]
   data?: Buffer
+  incomingDisk?: IncomingDiskState
   inFlight: boolean
   cancel: boolean
   cancelReason?: string
   cancelSource?: "local" | "remote"
+}
+
+interface IncomingDiskState {
+  finalPath: string
+  tempPath: string
+  handle: FileHandle
+  queue: Promise<void>
+  offset: number
+  error: string
+  closed: boolean
 }
 
 export interface PeerSnapshot {
@@ -384,6 +396,7 @@ export class SendSession {
   private readonly logs: LogEntry[] = []
   private readonly subscribers = new Set<() => void>()
   private readonly eventSubscribers = new Set<(event: SessionEvent) => void>()
+  private readonly reservedSavePaths = new Set<string>()
 
   private rtcEpochCounter = 0
   private socket: WebSocket | null = null
@@ -674,7 +687,14 @@ export class SendSession {
     if (!transfer || transfer.direction !== "in" || isFinal(transfer)) return false
     const peer = this.peers.get(transfer.peerId)
     if (!peer || !this.isPeerReady(peer)) return false
-    if (!this.sendDataControl(peer, { kind: "file-accept", transferId })) return false
+    const streamingToDisk = await this.startIncomingDiskTransfer(transfer)
+    transfer.data = undefined
+    transfer.buffers = streamingToDisk ? undefined : []
+    if (!this.sendDataControl(peer, { kind: "file-accept", transferId })) {
+      if (streamingToDisk) this.discardIncomingDiskTransfer(transfer)
+      transfer.buffers = []
+      return false
+    }
     transfer.status = "accepted"
     this.noteTransfer(transfer)
     this.emit({ type: "transfer", transfer: this.transferSnapshot(transfer) })
@@ -738,19 +758,136 @@ export class SendSession {
   async saveTransfer(transferId: string) {
     const transfer = this.transfers.get(transferId)
     if (!transfer || transfer.direction !== "in" || transfer.status !== "complete") return null
+    if (transfer.savedPath) return transfer.savedPath
     if (!transfer.data && transfer.buffers?.length) transfer.data = Buffer.concat(transfer.buffers)
     if (!transfer.data) return null
-    transfer.savedPath ||= await saveIncomingFile(this.saveDir, transfer.name, transfer.data)
+    transfer.savedPath = await saveIncomingFile(this.saveDir, transfer.name, transfer.data)
     transfer.savedAt ||= Date.now()
-    const snapshot = this.transferSnapshot(transfer)
-    this.pushLog("transfer:saved", { transferId: transfer.id, path: transfer.savedPath })
-    this.emit({ type: "saved", transfer: snapshot })
+    this.emitTransferSaved(transfer)
     this.notify()
     return transfer.savedPath
   }
 
   getTransfer(transferId: string) {
     return this.transfers.get(transferId)
+  }
+
+  private emitTransferSaved(transfer: TransferState) {
+    const snapshot = this.transferSnapshot(transfer)
+    this.pushLog("transfer:saved", { transferId: transfer.id, path: transfer.savedPath })
+    this.emit({ type: "saved", transfer: snapshot })
+  }
+
+  private autoSaveTransfer(transferId: string) {
+    void this.saveTransfer(transferId).catch(error => {
+      this.pushLog("transfer:save-error", { transferId, error: `${error}` }, "error")
+      this.notify()
+    })
+  }
+
+  private async createIncomingDiskState(fileName: string): Promise<IncomingDiskState> {
+    const finalPath = await uniqueOutputPath(this.saveDir, fileName || "download", this.reservedSavePaths)
+    this.reservedSavePaths.add(finalPath)
+    for (let attempt = 0; ; attempt += 1) {
+      const tempPath = `${finalPath}.part.${uid(6)}${attempt ? `.${attempt}` : ""}`
+      try {
+        const handle = await open(tempPath, "wx")
+        return {
+          finalPath,
+          tempPath,
+          handle,
+          queue: Promise.resolve(),
+          offset: 0,
+          error: "",
+          closed: false,
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException | undefined)?.code === "EEXIST") continue
+        this.reservedSavePaths.delete(finalPath)
+        throw error
+      }
+    }
+  }
+
+  private takeIncomingDisk(transfer: TransferState) {
+    const disk = transfer.incomingDisk
+    transfer.incomingDisk = undefined
+    return disk
+  }
+
+  private async closeIncomingDiskState(disk: IncomingDiskState, removeTemp: boolean) {
+    if (!disk.closed) {
+      disk.closed = true
+      try { await disk.handle.close() } catch {}
+    }
+    if (removeTemp) await removePath(disk.tempPath)
+    this.reservedSavePaths.delete(disk.finalPath)
+  }
+
+  private discardIncomingDiskTransfer(transfer: TransferState) {
+    const disk = this.takeIncomingDisk(transfer)
+    if (!disk) return
+    void this.closeIncomingDiskState(disk, true)
+  }
+
+  private async startIncomingDiskTransfer(transfer: TransferState) {
+    if (!this.autoSaveIncoming || transfer.incomingDisk) return false
+    try {
+      transfer.incomingDisk = await this.createIncomingDiskState(transfer.name)
+      return true
+    } catch (error) {
+      this.pushLog("transfer:save-error", { transferId: transfer.id, error: `${error}` }, "error")
+      return false
+    }
+  }
+
+  private queueIncomingDiskWrite(peer: PeerState, transfer: TransferState, data: Buffer) {
+    const disk = transfer.incomingDisk
+    if (!disk) return
+    disk.queue = disk.queue.then(async () => {
+      if (disk.closed || disk.error || transfer.cancel || transfer.status !== "receiving") return
+      await writeFileChunk(disk.handle, data, disk.offset)
+      disk.offset += data.byteLength
+    }).catch(error => {
+      if (disk.error || isFinal(transfer)) return
+      disk.error = `${error}`
+      this.pushLog("transfer:save-error", { transferId: transfer.id, error: disk.error }, "error")
+      this.sendDataControl(peer, { kind: "file-error", transferId: transfer.id, reason: disk.error })
+      this.completeTransfer(transfer, "error", disk.error)
+    })
+  }
+
+  private async finalizeIncomingDiskTransfer(transfer: TransferState, expectedSize: number) {
+    const disk = this.takeIncomingDisk(transfer)
+    if (!disk) return null
+    await disk.queue
+    if (disk.error) {
+      await this.closeIncomingDiskState(disk, true)
+      return null
+    }
+    if (disk.offset !== expectedSize) throw new Error(`saved size mismatch: ${disk.offset} vs ${expectedSize}`)
+
+    let finalPath = disk.finalPath
+    try {
+      if (!disk.closed) {
+        disk.closed = true
+        await disk.handle.close()
+      }
+      if (await pathExists(finalPath)) {
+        this.reservedSavePaths.delete(finalPath)
+        finalPath = await uniqueOutputPath(this.saveDir, transfer.name || "download", this.reservedSavePaths)
+        this.reservedSavePaths.add(finalPath)
+      }
+      await rename(disk.tempPath, finalPath)
+      transfer.savedPath = finalPath
+      transfer.savedAt ||= Date.now()
+      return finalPath
+    } catch (error) {
+      await removePath(disk.tempPath)
+      throw error
+    } finally {
+      this.reservedSavePaths.delete(finalPath)
+    }
   }
 
   async waitFor(predicate: () => boolean, timeoutMs: number, signal?: AbortSignal | null) {
@@ -930,9 +1067,11 @@ export class SendSession {
     transfer.inFlight = false
     transfer.endedAt = Date.now()
     this.noteTransfer(transfer)
+    if (transfer.direction === "out") void closeLocalFile(transfer.file).catch(() => {})
     if (status !== "complete" && transfer.direction === "in") {
       transfer.buffers = []
       transfer.data = undefined
+      this.discardIncomingDiskTransfer(transfer)
     }
 
     const peer = this.peers.get(transfer.peerId)
@@ -945,7 +1084,7 @@ export class SendSession {
 
     const snapshot = this.transferSnapshot(transfer)
     this.emit({ type: "transfer", transfer: snapshot })
-    if (status === "complete" && transfer.direction === "in" && this.autoSaveIncoming) void this.saveTransfer(transfer.id)
+    if (status === "complete" && transfer.direction === "in" && this.autoSaveIncoming && transfer.savedAt === 0) this.autoSaveTransfer(transfer.id)
     this.notify()
   }
 
@@ -1517,8 +1656,11 @@ export class SendSession {
   private onBinary(peer: PeerState, data: Buffer) {
     const transfer = this.transfers.get(peer.activeIncoming)
     if (!transfer || transfer.status !== "receiving") return
-    transfer.buffers ||= []
-    transfer.buffers.push(data)
+    if (transfer.incomingDisk) this.queueIncomingDiskWrite(peer, transfer, data)
+    else {
+      transfer.buffers ||= []
+      transfer.buffers.push(data)
+    }
     transfer.bytes += data.byteLength
     transfer.chunks += 1
     this.noteTransfer(transfer)
@@ -1579,7 +1721,8 @@ export class SendSession {
           peer.activeIncoming = transfer.id
           transfer.status = "receiving"
           transfer.startedAt ||= Date.now()
-          transfer.buffers = []
+          transfer.data = undefined
+          transfer.buffers = transfer.incomingDisk ? undefined : []
           this.noteTransfer(transfer)
           this.emit({ type: "transfer", transfer: this.transferSnapshot(transfer) })
         }
@@ -1593,12 +1736,34 @@ export class SendSession {
       case "file-end": {
         const transfer = this.transfers.get(message.transferId)
         if (!transfer || transfer.direction !== "in") break
+        if (isFinal(transfer)) break
         if (transfer.status === "cancelling") {
           this.completeTransfer(transfer, "cancelled", transfer.cancelReason || "cancelled")
           break
         }
         if (transfer.status !== "receiving") {
           this.completeTransfer(transfer, "error", `unexpected end while ${transfer.status}`)
+          break
+        }
+        if (transfer.bytes !== message.size) {
+          const reason = `size mismatch: ${transfer.bytes} vs ${message.size}`
+          this.sendDataControl(peer, { kind: "file-error", transferId: transfer.id, reason })
+          this.completeTransfer(transfer, "error", reason)
+          break
+        }
+        if (transfer.incomingDisk) {
+          try {
+            const savedPath = await this.finalizeIncomingDiskTransfer(transfer, message.size)
+            if (!savedPath) break
+            this.sendDataControl(peer, { kind: "file-done", transferId: transfer.id, size: transfer.bytes, totalChunks: transfer.chunks })
+            this.completeTransfer(transfer, "complete")
+            this.emitTransferSaved(transfer)
+          } catch (error) {
+            const reason = `${error}`
+            this.pushLog("transfer:save-error", { transferId: transfer.id, error: reason }, "error")
+            this.sendDataControl(peer, { kind: "file-error", transferId: transfer.id, reason })
+            this.completeTransfer(transfer, "error", reason)
+          }
           break
         }
         const data = Buffer.concat(transfer.buffers || [])
