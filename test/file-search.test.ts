@@ -24,9 +24,13 @@ describe("file search query helpers", () => {
     expect(isSlowMountProbe(220, 200)).toBe(true)
   })
 
-  test("normalizes separators and only trims trailing CRLF", () => {
+  test("normalizes separators, matching outer quotes, and trailing CRLF", () => {
     expect(normalizeSearchQuery("src\\main.ts\r\n")).toBe("src/main.ts")
     expect(normalizeSearchQuery("docs/My File.md")).toBe("docs/My File.md")
+    expect(normalizeSearchQuery("\"C:\\Users\\cetin\\My File.txt\"")).toBe("C:/Users/cetin/My File.txt")
+    expect(normalizeSearchQuery("'C:\\Users\\cetin\\My File.txt'")).toBe("C:/Users/cetin/My File.txt")
+    expect(normalizeSearchQuery("\"docs/My File.md")).toBe("\"docs/My File.md")
+    expect(normalizeSearchQuery("docs/\"My File\".md")).toBe("docs/\"My File\".md")
   })
 
   test("matches ordered subsequences and scores basename prefixes first", () => {
@@ -77,6 +81,12 @@ describe("file search query helpers", () => {
       workspaceRoot: join(homedir(), "downloads"),
       displayPrefix: "~/downloads/",
       query: "file",
+    })
+    expect(deriveFileSearchScope("\"src\\main\"", "/workspace")).toEqual({
+      normalizedInput: "src/main",
+      workspaceRoot: "/workspace/src",
+      displayPrefix: "src/",
+      query: "main",
     })
   })
 

@@ -53,13 +53,16 @@ const BOUNDARY_CHARS = new Set(["/", "_", "-", "."])
 export const FILE_SEARCH_SLOW_MOUNT_MS = 250
 
 const trimTrailingCrLf = (value: string) => value.replace(/[\r\n]+$/u, "")
+const trimMatchingQuotes = (value: string) => value.length >= 2 && (value.startsWith("\"") && value.endsWith("\"") || value.startsWith("'") && value.endsWith("'"))
+  ? value.slice(1, -1)
+  : value
 const normalizeSeparators = (value: string) => value.replace(/\\/gu, "/")
 const pathChars = (value: string) => Array.from(value)
 const lower = (value: string) => value.toLocaleLowerCase("en-US")
 const renderedDisplayPrefix = (displayPrefix: string) => displayPrefix === "~" ? "~/" : displayPrefix
 const MOUNTINFO_PATH = "/proc/self/mountinfo"
 
-export const normalizeSearchQuery = (value: string) => normalizeSeparators(trimTrailingCrLf(value))
+export const normalizeSearchQuery = (value: string) => normalizeSeparators(trimMatchingQuotes(trimTrailingCrLf(value)))
 export const normalizeRelativePath = (value: string) => normalizeSeparators(value.split(sep).join("/"))
 export const shouldSkipSearchDirectory = (name: string) => SKIPPED_DIRECTORIES.has(name)
 export const isCaseSensitiveQuery = (query: string) => /[A-Z]/u.test(query)

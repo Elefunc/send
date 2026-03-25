@@ -74,6 +74,7 @@ describe("SendSession mutators", () => {
       autoAcceptIncoming: false,
       autoSaveIncoming: false,
     })
+    expect(session.snapshot().profile?.streamingSaveIncoming).toBe(true)
     expect(session.snapshot().pulse.state).toBe("idle")
     expect(session.snapshot().turnState).toBe("none")
   })
@@ -89,16 +90,18 @@ describe("SendSession mutators", () => {
     const profiles = sent
       .map(message => JSON.parse(message))
       .filter(message => message.kind === "profile")
-      .map(message => message.profile?.defaults)
+      .map(message => message.profile)
 
-    expect(profiles.at(-1)).toEqual({
+    expect(profiles.at(-1)?.defaults).toEqual({
       autoAcceptIncoming: true,
       autoSaveIncoming: true,
     })
+    expect(profiles.at(-1)?.streamingSaveIncoming).toBe(true)
     expect(session.snapshot().profile?.defaults).toEqual({
       autoAcceptIncoming: true,
       autoSaveIncoming: true,
     })
+    expect(session.snapshot().profile?.streamingSaveIncoming).toBe(true)
   })
 
   test("notifies subscribers for consecutive inbound profile updates", async () => {
@@ -867,6 +870,7 @@ describe("SendSession mutators", () => {
     expect(profile.network?.asn).toBe(64512)
     expect(profile.network?.ip).toBe("203.0.113.5")
     expect(profile.ua?.browser).toBe("send-cli")
+    expect(profile.streamingSaveIncoming).toBe(true)
     expect(profile.ready).toBe(true)
   })
 

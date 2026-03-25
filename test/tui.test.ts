@@ -5,7 +5,7 @@ import type { PeerSnapshot, TransferSnapshot } from "../src/core/session"
 import { fallbackName } from "../src/core/protocol"
 
 const { createTestRenderer, rgb, ui } = reziCore
-const { aboutCliCommand, aboutWebLabel, aboutWebUrl, clampFilePreviewSelectedIndex, consumeSatisfiedFocusRequest, createInitialTuiState, createNoopTuiActions, createQuitController, deriveBootFocusState, ensureFilePreviewScrollTop, filePreviewVisible, groupTransfersByPeer, isEditableFocusId, moveFilePreviewSelection, renderTuiView, renderedReadySelectedPeers, resolveWebUrlBase, resumeCliCommand, resumeOutputLines, resumeWebUrl, scheduleBootNameJump, shouldSwallowQQuit, transferSummaryStats, visiblePanes, webInviteUrl, withAcceptedDraftInput } = tuiRuntime
+const { aboutCliCommand, aboutWebLabel, aboutWebUrl, canAcceptFilePreviewWithRight, canNavigateDraftHistory, clampFilePreviewSelectedIndex, consumeSatisfiedFocusRequest, createInitialTuiState, createNoopTuiActions, createQuitController, deriveBootFocusState, ensureFilePreviewScrollTop, filePreviewVisible, groupTransfersByPeer, isDraftHistoryEntryPoint, isEditableFocusId, moveDraftHistory, moveFilePreviewSelection, previewPathSegments, previewSegmentStyle, pushDraftHistoryEntry, renderTuiView, renderedReadySelectedPeers, resolveWebUrlBase, resumeCliCommand, resumeOutputLines, resumeWebUrl, scheduleBootNameJump, shouldSwallowQQuit, transferSummaryStats, visiblePanes, webInviteUrl, withAcceptedDraftInput } = tuiRuntime
 
 const createWideRenderer = () => createTestRenderer({ viewport: { cols: 180, rows: 60 } })
 const hasRenderedText = (view: ReturnType<ReturnType<typeof createWideRenderer>["render"]>, value: string) =>
@@ -622,6 +622,17 @@ describe("TUI view", () => {
     expect(error.kind).toBe("text")
     expect(status.text).toBe("2 matches")
     expect(error.text).toBe(" ")
+    const pathSegments = view.nodes
+      .filter(node => node.kind === "text" && node.path.length > previewPath.path.length && previewPath.path.every((part, pathIndex) => node.path[pathIndex] === part))
+      .map(node => [node.text, node.props.style ?? null])
+    const row = view.findById("file-preview-row-0")
+    const marker = view.nodes.find(node => node.kind === "text" && node.text === ">" && row && node.path.length > row.path.length && row.path.every((part, pathIndex) => node.path[pathIndex] === part))
+    expect(pathSegments).toEqual([
+      ["src/", { fg: rgb(159, 166, 178), dim: true }],
+      ["main", { fg: rgb(170, 217, 76), bold: true }],
+      [".ts", { fg: rgb(255, 255, 255) }],
+    ])
+    expect(marker?.props.style).toEqual({ fg: rgb(89, 194, 255), bold: true })
     expect(view.toText().includes("src/main.ts")).toBe(true)
     expect(hasRenderedText(view, "1.00 KB")).toBe(true)
     expect(hasRenderedText(view, "dir")).toBe(true)
@@ -1013,6 +1024,7 @@ describe("TUI view", () => {
             network: { asOrganization: "Edge ISP", colo: "ICN", ip: "203.0.113.5" },
             ua: { browser: "send-cli", os: "linux", device: "desktop" },
             defaults: { autoAcceptIncoming: true, autoSaveIncoming: false },
+            streamingSaveIncoming: true,
             ready: true,
             error: "",
           },
@@ -1192,14 +1204,14 @@ describe("TUI view", () => {
       at: Date.now(),
       kind: "profile",
       name: "alice",
-      profile: { defaults: { autoAcceptIncoming: false, autoSaveIncoming: true } },
+      profile: { defaults: { autoAcceptIncoming: false, autoSaveIncoming: true }, streamingSaveIncoming: true },
     }))
 
     unsubscribe()
 
     const view = renderer.render(renderTuiView(state, createNoopTuiActions()))
-    expect(hasRenderedText(view, "aS")).toBe(true)
-    expect(hasRenderedText(view, "(aS)")).toBe(false)
+    expect(hasRenderedText(view, "aX")).toBe(true)
+    expect(hasRenderedText(view, "(aX)")).toBe(false)
     expect(hasRenderedText(view, "As")).toBe(false)
     expect(hasRenderedText(view, "(As)")).toBe(false)
   })
@@ -1223,7 +1235,7 @@ describe("TUI view", () => {
           turnState: "idle",
           dataState: "open",
           lastError: "",
-          profile: { defaults: { autoAcceptIncoming: true, autoSaveIncoming: true } },
+          profile: { defaults: { autoAcceptIncoming: true, autoSaveIncoming: true }, streamingSaveIncoming: true },
           rttMs: 0,
           localCandidateType: "",
           remoteCandidateType: "",
@@ -1237,7 +1249,7 @@ describe("TUI view", () => {
     const shareButton = view.findById("peer-share-turn-p1")
     const statusCluster = view.findById("peer-status-cluster-p1")
     const status = view.nodes.find(node => node.kind === "status" && "label" in node.props && node.props.label === "connected")
-    const autoState = view.findText("AS")
+    const autoState = view.findText("AX")
     expect(toggle === null || nameSlot === null || shareButton === null || statusCluster === null || status === undefined || autoState === null).toBe(false)
     if (!toggle || !nameSlot || !shareButton || !statusCluster || !status || !autoState) throw new Error("missing peer header nodes")
     const toggleCenter = toggle.rect.y + Math.floor(toggle.rect.h / 2)
@@ -1782,6 +1794,49 @@ describe("TUI file preview helpers", () => {
     })).toBe(false)
   })
 
+  test("accepts the selected preview row with right only when the files cursor starts at the end", () => {
+    const state = {
+      focusedId: "draft-input",
+      draftInput: "mai",
+      filePreview: {
+        dismissedQuery: null,
+        workspaceRoot: "/tmp",
+        displayPrefix: "",
+        displayQuery: "mai",
+        pendingQuery: "mai",
+        waiting: false,
+        error: null,
+        results: [
+          { relativePath: "src/main.ts", absolutePath: "/tmp/src/main.ts", fileName: "main.ts", kind: "file" as const, score: 10, indices: [4, 5, 6, 7] },
+        ],
+        selectedIndex: 0,
+        scrollTop: 0,
+      },
+    }
+    expect(canAcceptFilePreviewWithRight(state, 3)).toBe(true)
+    expect(canAcceptFilePreviewWithRight(state, 2)).toBe(false)
+  })
+
+  test("does not accept preview with right when the preview is hidden, unselected, or another input is focused", () => {
+    const preview = {
+      dismissedQuery: null,
+      workspaceRoot: "/tmp",
+      displayPrefix: "",
+      displayQuery: "mai",
+      pendingQuery: "mai",
+      waiting: false,
+      error: null,
+      results: [
+        { relativePath: "src/main.ts", absolutePath: "/tmp/src/main.ts", fileName: "main.ts", kind: "file" as const, score: 10, indices: [4, 5, 6, 7] },
+      ],
+      selectedIndex: 0,
+      scrollTop: 0,
+    }
+    expect(canAcceptFilePreviewWithRight({ focusedId: "room-input", draftInput: "mai", filePreview: preview }, 3)).toBe(false)
+    expect(canAcceptFilePreviewWithRight({ focusedId: "draft-input", draftInput: "mai", filePreview: { ...preview, dismissedQuery: "mai" } }, 3)).toBe(false)
+    expect(canAcceptFilePreviewWithRight({ focusedId: "draft-input", draftInput: "mai", filePreview: { ...preview, selectedIndex: null } }, 3)).toBe(false)
+  })
+
   test("clamps preview selection and keeps the selected row visible", () => {
     expect(clampFilePreviewSelectedIndex(null, 3)).toBe(0)
     expect(clampFilePreviewSelectedIndex(10, 3)).toBe(2)
@@ -1808,5 +1863,72 @@ describe("TUI file preview helpers", () => {
     expect(movedDown.selectedIndex).toBe(0)
     const movedUp = moveFilePreviewSelection({ ...movedDown, selectedIndex: 0 }, -1)
     expect(movedUp.selectedIndex).toBe(1)
+  })
+
+  test("splits preview paths into prefix, path, and basename segments", () => {
+    expect(previewPathSegments("../src/main.ts", 3, [7, 8, 9, 10])).toEqual([
+      { text: "../", highlighted: false, role: "prefix" },
+      { text: "src/", highlighted: false, role: "path" },
+      { text: "main", highlighted: true, role: "basename" },
+      { text: ".ts", highlighted: false, role: "basename" },
+    ])
+  })
+
+  test("maps preview segment styles to muted, primary, and selected highlight colors", () => {
+    expect(previewSegmentStyle({ text: "../", highlighted: false, role: "prefix" }, false)).toEqual({ fg: rgb(112, 121, 136), dim: true })
+    expect(previewSegmentStyle({ text: "src/", highlighted: false, role: "path" }, false)).toEqual({ fg: rgb(159, 166, 178), dim: true })
+    expect(previewSegmentStyle({ text: "main", highlighted: false, role: "basename" }, false)).toEqual({ fg: rgb(255, 255, 255) })
+    expect(previewSegmentStyle({ text: "main", highlighted: true, role: "basename" }, false)).toEqual({ fg: rgb(89, 194, 255), bold: true })
+    expect(previewSegmentStyle({ text: "main", highlighted: true, role: "basename" }, true)).toEqual({ fg: rgb(170, 217, 76), bold: true })
+  })
+
+  test("stores successful draft submissions newest-first and normalizes quoted paths", () => {
+    const pushed = pushDraftHistoryEntry({ entries: [], index: null, baseInput: null }, "\"src\\main.ts\"")
+    expect(pushed).toEqual({ entries: ["src/main.ts"], index: null, baseInput: null })
+    expect(pushDraftHistoryEntry(pushed, "'src\\main.ts'")).toEqual(pushed)
+    expect(pushDraftHistoryEntry(pushed, "docs/readme.md")).toEqual({
+      entries: ["docs/readme.md", "src/main.ts"],
+      index: null,
+      baseInput: null,
+    })
+  })
+
+  test("enters draft history only from home-state inputs and keeps browsing while the caret stays at zero", () => {
+    expect(isDraftHistoryEntryPoint("", 0)).toBe(true)
+    expect(isDraftHistoryEntryPoint("src/", 0)).toBe(true)
+    expect(isDraftHistoryEntryPoint("\"src/\"", 0)).toBe(true)
+    expect(isDraftHistoryEntryPoint("src/main", 0)).toBe(false)
+    expect(isDraftHistoryEntryPoint("src/", 1)).toBe(false)
+    expect(canNavigateDraftHistory({ entries: ["src/main.ts"], index: null, baseInput: null }, "src/", 0)).toBe(true)
+    expect(canNavigateDraftHistory({ entries: ["src/main.ts"], index: 0, baseInput: "" }, "src/main.ts", 0)).toBe(true)
+    expect(canNavigateDraftHistory({ entries: ["src/main.ts"], index: 0, baseInput: "" }, "src/main.ts", 1)).toBe(false)
+  })
+
+  test("cycles draft history and restores the base input when moving back down past the newest entry", () => {
+    const history = { entries: ["src/main.ts", "docs/readme.md"], index: null, baseInput: null }
+    const entered = moveDraftHistory(history, "", -1)
+    expect(entered).toEqual({
+      history: { entries: ["src/main.ts", "docs/readme.md"], index: 0, baseInput: "" },
+      value: "src/main.ts",
+      changed: true,
+    })
+    const older = moveDraftHistory(entered.history, entered.value, -1)
+    expect(older).toEqual({
+      history: { entries: ["src/main.ts", "docs/readme.md"], index: 1, baseInput: "" },
+      value: "docs/readme.md",
+      changed: true,
+    })
+    const newer = moveDraftHistory(older.history, older.value, 1)
+    expect(newer).toEqual({
+      history: { entries: ["src/main.ts", "docs/readme.md"], index: 0, baseInput: "" },
+      value: "src/main.ts",
+      changed: true,
+    })
+    const restored = moveDraftHistory(newer.history, newer.value, 1)
+    expect(restored).toEqual({
+      history: { entries: ["src/main.ts", "docs/readme.md"], index: null, baseInput: null },
+      value: "",
+      changed: true,
+    })
   })
 })

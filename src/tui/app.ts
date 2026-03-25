@@ -1,6 +1,7 @@
 import { resolve } from "node:path"
-import { rgb, ui, type BadgeVariant, type VNode } from "@rezi-ui/core"
+import { rgb, ui, type BadgeVariant, type TextStyle, type UiEvent, type VNode } from "@rezi-ui/core"
 import { createNodeApp } from "@rezi-ui/node"
+import { applyInputEditEvent } from "../../node_modules/@rezi-ui/core/dist/runtime/inputEditor.js"
 import { inspectLocalFile } from "../core/files"
 import { isSessionAbortedError, SendSession, type PeerSnapshot, type SessionConfig, type SessionSnapshot, type TransferSnapshot } from "../core/session"
 import { cleanLocalId, cleanName, cleanRoom, displayPeerName, fallbackName, formatBytes, type LogEntry, peerDefaultsToken, type PeerProfile, uid } from "../core/protocol"
@@ -16,6 +17,13 @@ type TransferSection = { title: string; items: TransferSnapshot[]; clearAction?:
 type TransferSummaryStat = { state: string; label?: string; count: number; size: number; countText?: string; sizeText?: string }
 type TransferGroup = { key: string; name: string; items: TransferSnapshot[] }
 type DenseSectionChild = VNode | false | null | undefined
+type PreviewSegmentRole = "prefix" | "path" | "basename"
+type PreviewSegment = { text: string; highlighted: boolean; role: PreviewSegmentRole }
+type DraftHistoryState = {
+  entries: string[]
+  index: number | null
+  baseInput: string | null
+}
 type FilePreviewState = {
   dismissedQuery: string | null
   workspaceRoot: string | null
@@ -57,6 +65,7 @@ export interface TuiState {
   bootNameJumpPending: boolean
   draftInput: string
   draftInputKeyVersion: number
+  draftHistory: DraftHistoryState
   filePreview: FilePreviewState
   drafts: DraftItem[]
   autoOfferOutgoing: boolean
@@ -88,7 +97,7 @@ export interface TuiActions {
   toggleAutoOffer: TuiAction
   toggleAutoAccept: TuiAction
   toggleAutoSave: TuiAction
-  setDraftInput: (value: string) => void
+  setDraftInput: (value: string, cursor?: number) => void
   addDrafts: TuiAction
   removeDraft: (draftId: string) => void
   clearDrafts: TuiAction
@@ -111,6 +120,7 @@ const TRANSPARENT_BORDER_STYLE = { fg: rgb(7, 10, 12) } as const
 const METRIC_BORDER_STYLE = { fg: rgb(20, 25, 32) } as const
 const PRIMARY_TEXT_STYLE = { fg: rgb(255, 255, 255) } as const
 const HEADING_TEXT_STYLE = { fg: rgb(255, 255, 255), bold: true } as const
+const MUTED_TEXT_STYLE = { fg: rgb(159, 166, 178) } as const
 const DEFAULT_WEB_URL = "https://send.rt.ht/"
 const DEFAULT_SAVE_DIR = resolve(process.cwd())
 const ABOUT_ELEFUNC_URL = "https://elefunc.com/send"
@@ -129,6 +139,7 @@ const countFormat = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 
 const percentFormat = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 })
 const timeFormat = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" })
 const pluralRules = new Intl.PluralRules()
+const DRAFT_HISTORY_LIMIT = 50
 
 export const visiblePanes = (showEvents: boolean): VisiblePane[] => showEvents ? ["peers", "transfers", "logs"] : ["peers", "transfers"]
 
@@ -380,7 +391,7 @@ const uaSummary = (profile?: PeerProfile) => joinSummary([profile?.ua?.browser, 
 const profileIp = (profile?: PeerProfile) => profile?.network?.ip || "—"
 const peerDefaultsVariant = (profile?: PeerProfile): BadgeVariant => {
   const token = peerDefaultsToken(profile)
-  return token === "AS" ? "success" : token === "as" ? "warning" : token === "??" ? "default" : "info"
+  return token === "AX" ? "success" : token === "as" ? "warning" : token === "??" ? "default" : "info"
 }
 const TIGHT_TAG_COLORS = {
   default: rgb(89, 194, 255),
@@ -389,6 +400,12 @@ const TIGHT_TAG_COLORS = {
   error: rgb(240, 113, 120),
   info: rgb(89, 194, 255),
 } as const
+const PREVIEW_PREFIX_STYLE = { fg: rgb(112, 121, 136), dim: true } as const
+const PREVIEW_PATH_STYLE = { ...MUTED_TEXT_STYLE, dim: true } as const
+const PREVIEW_BASENAME_STYLE = PRIMARY_TEXT_STYLE
+const PREVIEW_HIGHLIGHT_STYLE = { fg: TIGHT_TAG_COLORS.info, bold: true } as const
+const PREVIEW_SELECTED_HIGHLIGHT_STYLE = { fg: TIGHT_TAG_COLORS.success, bold: true } as const
+const PREVIEW_SELECTED_MARKER_STYLE = { fg: TIGHT_TAG_COLORS.info, bold: true } as const
 const tightTag = (text: string, props: { key?: string; variant?: BadgeVariant; bare?: boolean } = {}) => ui.text(props.bare ? text : `(${text})`, {
   ...(props.key === undefined ? {} : { key: props.key }),
   style: {
@@ -408,6 +425,71 @@ const emptyFilePreviewState = (): FilePreviewState => ({
   selectedIndex: null,
   scrollTop: 0,
 })
+const emptyDraftHistoryState = (): DraftHistoryState => ({
+  entries: [],
+  index: null,
+  baseInput: null,
+})
+
+const resetDraftHistoryBrowse = (history: DraftHistoryState): DraftHistoryState =>
+  history.index == null && history.baseInput == null
+    ? history
+    : { ...history, index: null, baseInput: null }
+
+export const pushDraftHistoryEntry = (history: DraftHistoryState, value: string, limit = DRAFT_HISTORY_LIMIT): DraftHistoryState => {
+  const nextValue = normalizeSearchQuery(value)
+  if (!nextValue) return resetDraftHistoryBrowse(history)
+  return {
+    entries: history.entries[0] === nextValue ? history.entries : [nextValue, ...history.entries].slice(0, limit),
+    index: null,
+    baseInput: null,
+  }
+}
+
+export const isDraftHistoryEntryPoint = (value: string, cursor: number, cwd = process.cwd()) => {
+  if (cursor !== 0) return false
+  const normalized = normalizeSearchQuery(value)
+  if (!normalized) return true
+  return !deriveFileSearchScope(value, cwd)?.query
+}
+
+export const canNavigateDraftHistory = (history: DraftHistoryState, value: string, cursor: number, cwd = process.cwd()) =>
+  cursor === 0 && (history.index != null || (history.entries.length > 0 && isDraftHistoryEntryPoint(value, cursor, cwd)))
+
+export const moveDraftHistory = (history: DraftHistoryState, value: string, direction: -1 | 1) => {
+  if (!history.entries.length) return { history, value, changed: false }
+  if (history.index == null) {
+    if (direction > 0) return { history, value, changed: false }
+    const nextIndex = 0
+    return {
+      history: { ...history, index: nextIndex, baseInput: value },
+      value: history.entries[nextIndex]!,
+      changed: history.entries[nextIndex] !== value,
+    }
+  }
+  if (direction < 0) {
+    const nextIndex = Math.min(history.entries.length - 1, history.index + 1)
+    return {
+      history: nextIndex === history.index ? history : { ...history, index: nextIndex },
+      value: history.entries[nextIndex]!,
+      changed: nextIndex !== history.index || history.entries[nextIndex] !== value,
+    }
+  }
+  if (history.index === 0) {
+    const nextValue = history.baseInput ?? ""
+    return {
+      history: resetDraftHistoryBrowse(history),
+      value: nextValue,
+      changed: nextValue !== value || history.index != null,
+    }
+  }
+  const nextIndex = history.index - 1
+  return {
+    history: { ...history, index: nextIndex },
+    value: history.entries[nextIndex]!,
+    changed: history.entries[nextIndex] !== value,
+  }
+}
 
 type FocusControllerState = Pick<TuiState, "pendingFocusTarget" | "focusRequestEpoch" | "bootNameJumpPending">
 
@@ -493,6 +575,12 @@ export const transferActualDurationMs = (transfer: TransferSnapshot, now = Date.
 export const transferWaitDurationMs = (transfer: TransferSnapshot, now = Date.now()) => Math.max(0, (transfer.startedAt || now) - transfer.createdAt)
 export const filePreviewVisible = (state: Pick<TuiState, "focusedId" | "draftInput" | "filePreview">) =>
   state.focusedId === DRAFT_INPUT_ID && !!normalizeSearchQuery(state.draftInput) && state.filePreview.dismissedQuery !== state.draftInput
+export const canAcceptFilePreviewWithRight = (state: Pick<TuiState, "focusedId" | "draftInput" | "filePreview">, cursor: number) =>
+  state.focusedId === DRAFT_INPUT_ID
+  && cursor === state.draftInput.length
+  && filePreviewVisible(state)
+  && state.filePreview.selectedIndex != null
+  && !!state.filePreview.results[state.filePreview.selectedIndex]
 export const clampFilePreviewSelectedIndex = (selectedIndex: number | null, resultCount: number) =>
   !resultCount ? null : selectedIndex == null ? 0 : Math.max(0, Math.min(resultCount - 1, selectedIndex))
 export const ensureFilePreviewScrollTop = (selectedIndex: number | null, scrollTop: number, resultCount: number, visibleRows = FILE_SEARCH_VISIBLE_ROWS) => {
@@ -519,24 +607,36 @@ const selectedFilePreviewMatch = (state: TuiState) => {
   const index = state.filePreview.selectedIndex
   return index == null ? null : state.filePreview.results[index] ?? null
 }
-const highlightedSegments = (value: string, indices: number[]) => {
+export const previewPathSegments = (value: string, prefixLength: number, indices: number[]) => {
   const marks = new Set(indices)
   const chars = Array.from(value)
-  const segments: Array<{ text: string; highlighted: boolean }> = []
+  const basenameStart = Math.max(prefixLength, value.lastIndexOf("/") + 1)
+  const segments: PreviewSegment[] = []
   let current = ""
   let highlighted = false
+  let role: PreviewSegmentRole = "basename"
   for (let index = 0; index < chars.length; index += 1) {
     const nextHighlighted = marks.has(index)
-    if (current && nextHighlighted !== highlighted) {
-      segments.push({ text: current, highlighted })
+    const nextRole = index < prefixLength ? "prefix" : index < basenameStart ? "path" : "basename"
+    if (current && (nextHighlighted !== highlighted || nextRole !== role)) {
+      segments.push({ text: current, highlighted, role })
       current = ""
     }
     current += chars[index]
     highlighted = nextHighlighted
+    role = nextRole
   }
-  if (current) segments.push({ text: current, highlighted })
+  if (current) segments.push({ text: current, highlighted, role })
   return segments
 }
+export const previewSegmentStyle = (segment: PreviewSegment, selected: boolean): TextStyle =>
+  segment.highlighted
+    ? selected ? PREVIEW_SELECTED_HIGHLIGHT_STYLE : PREVIEW_HIGHLIGHT_STYLE
+    : segment.role === "prefix"
+      ? PREVIEW_PREFIX_STYLE
+      : segment.role === "path"
+        ? PREVIEW_PATH_STYLE
+        : PREVIEW_BASENAME_STYLE
 
 export const summarizeStates = <T,>(items: T[], stateOf: (item: T) => string = item => `${(item as { status?: string }).status ?? "idle"}`, sizeOf: (item: T) => number = item => Number((item as { size?: number }).size) || 0, defaults: string[] = []): TransferSummaryStat[] => {
   const order = ["draft", "pending", "queued", "offered", "accepted", "receiving", "sending", "awaiting-done", "cancelling", "complete", "rejected", "cancelled", "error"]
@@ -609,6 +709,7 @@ export const createInitialTuiState = (initialConfig: SessionConfig, showEvents =
     ...focusState,
     draftInput: "",
     draftInputKeyVersion: 0,
+    draftHistory: emptyDraftHistoryState(),
     filePreview: emptyFilePreviewState(),
     drafts: [],
     autoOfferOutgoing: launchOptions.offer ?? true,
@@ -939,14 +1040,14 @@ const renderDraftSummary = (drafts: DraftItem[]) => denseSection({
   ui.row({ gap: 1, wrap: true }, summarizeStates(drafts, () => "draft", draft => draft.size, ["draft"]).map(renderSummaryStat)),
 ])
 
-const renderHighlightedPreviewPath = (value: string, indices: number[], options: { id?: string; key?: string; flex?: number } = {}) => ui.row({
+const renderHighlightedPreviewPath = (value: string, prefixLength: number, indices: number[], selected: boolean, options: { id?: string; key?: string; flex?: number } = {}) => ui.row({
   gap: 0,
   wrap: true,
   ...(options.id === undefined ? {} : { id: options.id }),
   ...(options.key === undefined ? {} : { key: options.key }),
   ...(options.flex === undefined ? {} : { flex: options.flex }),
-}, highlightedSegments(value, indices).map((segment, index) =>
-  ui.text(segment.text, { key: `segment-${index}`, ...(segment.highlighted ? { style: { bold: true } } : {}) }),
+}, previewPathSegments(value, prefixLength, indices).map((segment, index) =>
+  ui.text(segment.text, { key: `segment-${index}`, style: previewSegmentStyle(segment, selected) }),
 ))
 
 const renderFilePreviewRow = (match: FileSearchMatch, index: number, selected: boolean, displayPrefix: string) => ui.row({
@@ -955,10 +1056,12 @@ const renderFilePreviewRow = (match: FileSearchMatch, index: number, selected: b
   gap: 1,
   wrap: true,
 }, [
-  ui.text(selected ? ">" : " "),
+  ui.text(selected ? ">" : " ", { style: selected ? PREVIEW_SELECTED_MARKER_STYLE : PREVIEW_PATH_STYLE }),
   renderHighlightedPreviewPath(
     formatFileSearchDisplayPath(displayPrefix, match.relativePath),
+    Array.from(formatFileSearchDisplayPath(displayPrefix, "")).length,
     offsetFileSearchMatchIndices(displayPrefix, match.indices),
+    selected,
     { id: `file-preview-path-${index}`, flex: 1 },
   ),
   match.kind === "file" && typeof match.size === "number" ? ui.text(formatBytes(match.size), { style: { dim: true } }) : null,
@@ -1108,7 +1211,7 @@ const renderFilesCard = (state: TuiState, actions: TuiActions) => denseSection({
         key: `draft-input-${state.draftInputKeyVersion}`,
         value: state.draftInput,
         placeholder: "path/to/file.txt",
-        onInput: value => actions.setDraftInput(value),
+        onInput: (value, cursor) => actions.setDraftInput(value, cursor),
       }),
     ]),
     actionButton("add-drafts", "Add", actions.addDrafts, "primary", !state.draftInput.trim()),
@@ -1214,6 +1317,7 @@ export const withAcceptedDraftInput = (state: TuiState, draftInput: string, file
     ...state,
     draftInput,
     draftInputKeyVersion: state.draftInputKeyVersion + 1,
+    draftHistory: resetDraftHistoryBrowse(state.draftHistory),
     filePreview,
     pendingFocusTarget: DRAFT_INPUT_ID,
     focusRequestEpoch: state.focusRequestEpoch + 1,
@@ -1233,6 +1337,8 @@ export const startTui = async (initialConfig: SessionConfig, launchOptions: TuiL
   let previewWorker: Worker | null = null
   let previewSessionId: string | null = null
   let previewSessionRoot: string | null = null
+  let draftCursor = state.draftInput.length
+  let draftCursorBeforeEvent = draftCursor
 
   const flushUpdate = () => {
     if (updateQueued || stopping || cleanedUp) return
@@ -1270,6 +1376,10 @@ export const startTui = async (initialConfig: SessionConfig, launchOptions: TuiL
     ...emptyFilePreviewState(),
     ...overrides,
   })
+  const exitDraftHistoryBrowse = () => commit(current =>
+    current.draftHistory.index == null && current.draftHistory.baseInput == null
+      ? current
+      : { ...current, draftHistory: resetDraftHistoryBrowse(current.draftHistory) })
 
   const ensurePreviewSession = (workspaceRoot: string) => {
     if (previewWorker && previewSessionId && previewSessionRoot === workspaceRoot) return
@@ -1365,17 +1475,21 @@ export const startTui = async (initialConfig: SessionConfig, launchOptions: TuiL
     return scope
   }
 
-  const updateDraftInput = (value: string) => {
-    const scope = deriveFileSearchScope(value, previewBaseRoot)
-    const shouldDispose = !scope || state.filePreview.dismissedQuery === value
+  const applyDraftInputValue = (value: string, options: { cursor?: number; history?: DraftHistoryState } = {}) => {
+    const nextValue = normalizeSearchQuery(value)
+    if (options.cursor !== undefined) draftCursor = Math.min(options.cursor, nextValue.length)
+    const scope = deriveFileSearchScope(nextValue, previewBaseRoot)
+    const shouldDispose = !scope || state.filePreview.dismissedQuery === nextValue
     commit(current => {
-      if (!scope) return { ...current, draftInput: value, filePreview: resetFilePreview() }
-      const shouldDismiss = current.filePreview.dismissedQuery === value
+      const draftHistory = options.history ?? resetDraftHistoryBrowse(current.draftHistory)
+      if (!scope) return { ...current, draftInput: nextValue, draftHistory, filePreview: resetFilePreview() }
+      const shouldDismiss = current.filePreview.dismissedQuery === nextValue
       const rootChanged = current.filePreview.workspaceRoot !== scope.workspaceRoot
       const basePreview = rootChanged ? resetFilePreview() : current.filePreview
       return {
         ...current,
-        draftInput: value,
+        draftInput: nextValue,
+        draftHistory,
         filePreview: {
           ...basePreview,
           workspaceRoot: scope.workspaceRoot,
@@ -1391,7 +1505,19 @@ export const startTui = async (initialConfig: SessionConfig, launchOptions: TuiL
       stopPreviewSession()
       return
     }
-    requestFilePreview(value)
+    requestFilePreview(nextValue)
+  }
+
+  const updateDraftInput = (value: string, cursor = draftCursor) => {
+    applyDraftInputValue(value, { cursor })
+  }
+
+  const recallDraftHistory = (direction: -1 | 1) => {
+    const next = moveDraftHistory(state.draftHistory, state.draftInput, direction)
+    if (!next.changed) return false
+    draftCursorBeforeEvent = 0
+    applyDraftInputValue(next.value, { cursor: 0, history: next.history })
+    return true
   }
 
   const acceptSelectedFilePreview = () => {
@@ -1413,6 +1539,8 @@ export const startTui = async (initialConfig: SessionConfig, launchOptions: TuiL
         selectedIndex: null,
         scrollTop: 0,
       }, { text: `Browsing ${nextValue}`, variant: "info" }))
+      draftCursor = nextValue.length
+      draftCursorBeforeEvent = draftCursor
       requestFilePreview(nextValue)
       return true
     }
@@ -1422,6 +1550,8 @@ export const startTui = async (initialConfig: SessionConfig, launchOptions: TuiL
       resetFilePreview({ dismissedQuery: displayPath }),
       { text: `Selected ${displayPath}.`, variant: "success" },
     ))
+    draftCursor = displayPath.length
+    draftCursorBeforeEvent = draftCursor
     stopPreviewSession()
     return true
   }
@@ -1477,6 +1607,7 @@ export const startTui = async (initialConfig: SessionConfig, launchOptions: TuiL
       roomInput: nextSeed.room,
       nameInput: visibleNameInput(nextSeed.name),
       draftInput: "",
+      draftHistory: resetDraftHistoryBrowse(current.draftHistory),
       filePreview: resetFilePreview(),
       drafts: [],
       offeringDrafts: false,
@@ -1486,8 +1617,10 @@ export const startTui = async (initialConfig: SessionConfig, launchOptions: TuiL
             pendingFocusTarget: current.pendingFocusTarget,
             focusRequestEpoch: current.focusRequestEpoch,
             bootNameJumpPending: current.bootNameJumpPending,
-          }),
+        }),
     }, { text, variant: "success" }))
+    draftCursor = 0
+    draftCursorBeforeEvent = 0
     bindSession(nextSession)
     void previousSession.close()
   }
@@ -1499,6 +1632,7 @@ export const startTui = async (initialConfig: SessionConfig, launchOptions: TuiL
       return
     }
     replaceSession({ ...state.sessionSeed, room: nextRoom }, `Joined room ${nextRoom}.`)
+    draftCursor = 0
   }
 
   const commitName = () => {
@@ -1529,9 +1663,14 @@ export const startTui = async (initialConfig: SessionConfig, launchOptions: TuiL
       commit(current => withNotice({
         ...current,
         draftInput: current.draftInput === submittedInput ? "" : current.draftInput,
+        draftHistory: pushDraftHistoryEntry(current.draftHistory, submittedInput),
         filePreview: current.draftInput === submittedInput ? resetFilePreview() : current.filePreview,
         drafts: [...current.drafts, created],
       }, { text: `Added ${plural(1, "draft file")}.`, variant: "success" }))
+      if (shouldDispose) {
+        draftCursor = 0
+        draftCursorBeforeEvent = 0
+      }
       if (shouldDispose) stopPreviewSession()
       maybeOfferDrafts()
     }, error => {
@@ -1614,7 +1753,7 @@ export const startTui = async (initialConfig: SessionConfig, launchOptions: TuiL
         error => commit(current => withNotice(current, { text: `${error}`, variant: "error" })),
       )
     },
-    setDraftInput: value => updateDraftInput(value),
+    setDraftInput: (value, cursor) => updateDraftInput(value, cursor),
     addDrafts,
     removeDraft: draftId => commit(current => withNotice({ ...current, drafts: current.drafts.filter(draft => draft.id !== draftId) }, { text: "Draft removed.", variant: "warning" })),
     clearDrafts: () => commit(current => withNotice({ ...current, drafts: [] }, { text: current.drafts.length ? `Cleared ${plural(current.drafts.length, "draft file")}.` : "No drafts to clear.", variant: current.drafts.length ? "warning" : "info" })),
@@ -1662,6 +1801,21 @@ export const startTui = async (initialConfig: SessionConfig, launchOptions: TuiL
   }
 
   app.view(model => renderTuiView(model, actions))
+  app.onEvent((event: UiEvent) => {
+    if (event.kind !== "engine" || state.focusedId !== DRAFT_INPUT_ID) return
+    draftCursorBeforeEvent = draftCursor
+    const edit = applyInputEditEvent(event.event, {
+      id: DRAFT_INPUT_ID,
+      value: state.draftInput,
+      cursor: draftCursor,
+      selectionStart: null,
+      selectionEnd: null,
+      multiline: false,
+    })
+    if (!edit) return
+    draftCursor = edit.nextCursor
+    if (!edit.action && state.draftHistory.index != null && draftCursor !== 0) exitDraftHistoryBrowse()
+  })
   app.onFocusChange(info => {
     const previousFocusedId = state.focusedId
     commit(current => {
@@ -1672,6 +1826,7 @@ export const startTui = async (initialConfig: SessionConfig, launchOptions: TuiL
       stopPreviewSession()
       commit(current => ({
         ...current,
+        draftHistory: resetDraftHistoryBrowse(current.draftHistory),
         filePreview: resetFilePreview({
           dismissedQuery: current.filePreview.dismissedQuery === current.draftInput ? current.draftInput : null,
         }),
@@ -1710,17 +1865,26 @@ export const startTui = async (initialConfig: SessionConfig, launchOptions: TuiL
         acceptSelectedFilePreview()
       },
     },
-    up: {
-      description: "Move file preview selection up",
-      when: ctx => ctx.focusedId === DRAFT_INPUT_ID && filePreviewVisible(state) && state.filePreview.results.length > 0,
+    right: {
+      description: "Accept focused preview row at end of Files input",
+      when: ctx => canAcceptFilePreviewWithRight(state, draftCursorBeforeEvent) && ctx.focusedId === DRAFT_INPUT_ID,
       handler: () => {
+        acceptSelectedFilePreview()
+      },
+    },
+    up: {
+      description: "Recall history or move file preview selection up",
+      when: ctx => ctx.focusedId === DRAFT_INPUT_ID && (canNavigateDraftHistory(state.draftHistory, state.draftInput, draftCursorBeforeEvent, previewBaseRoot) || filePreviewVisible(state) && state.filePreview.results.length > 0),
+      handler: () => {
+        if (canNavigateDraftHistory(state.draftHistory, state.draftInput, draftCursorBeforeEvent, previewBaseRoot) && recallDraftHistory(-1)) return
         commit(current => ({ ...current, filePreview: moveFilePreviewSelection(current.filePreview, -1) }))
       },
     },
     down: {
-      description: "Move file preview selection down",
-      when: ctx => ctx.focusedId === DRAFT_INPUT_ID && filePreviewVisible(state) && state.filePreview.results.length > 0,
+      description: "Recall history or move file preview selection down",
+      when: ctx => ctx.focusedId === DRAFT_INPUT_ID && (canNavigateDraftHistory(state.draftHistory, state.draftInput, draftCursorBeforeEvent, previewBaseRoot) || filePreviewVisible(state) && state.filePreview.results.length > 0),
       handler: () => {
+        if (canNavigateDraftHistory(state.draftHistory, state.draftInput, draftCursorBeforeEvent, previewBaseRoot) && recallDraftHistory(1)) return
         commit(current => ({ ...current, filePreview: moveFilePreviewSelection(current.filePreview, 1) }))
       },
     },
@@ -1755,13 +1919,15 @@ export const startTui = async (initialConfig: SessionConfig, launchOptions: TuiL
         if (ctx.focusedId === NAME_INPUT_ID) commit(current => withNotice({ ...current, nameInput: visibleNameInput(current.snapshot.name) }, { text: "Name input reset.", variant: "warning" }))
         if (ctx.focusedId === DRAFT_INPUT_ID && filePreviewVisible(state)) {
           stopPreviewSession()
+          exitDraftHistoryBrowse()
           commit(current => withNotice({
             ...current,
             filePreview: resetFilePreview({ dismissedQuery: current.draftInput }),
           }, { text: "File preview hidden.", variant: "warning" }))
         } else if (ctx.focusedId === DRAFT_INPUT_ID) {
           stopPreviewSession()
-          commit(current => withNotice({ ...current, draftInput: "", filePreview: resetFilePreview() }, { text: "Draft input cleared.", variant: "warning" }))
+          draftCursor = 0
+          commit(current => withNotice({ ...current, draftInput: "", draftHistory: resetDraftHistoryBrowse(current.draftHistory), filePreview: resetFilePreview() }, { text: "Draft input cleared.", variant: "warning" }))
         }
       },
     },

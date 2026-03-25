@@ -56,6 +56,7 @@ export interface PeerProfile {
     autoAcceptIncoming?: boolean
     autoSaveIncoming?: boolean
   }
+  streamingSaveIncoming?: boolean
   ready?: boolean
   error?: string
 }
@@ -219,13 +220,15 @@ export const signalEpoch = (value: unknown) => Number.isSafeInteger(value) && Nu
 
 export const buildCliProfile = (): PeerProfile => ({
   ua: { browser: "send-cli", os: process.platform, device: "desktop" },
+  streamingSaveIncoming: true,
   ready: true,
 })
 
 export const peerDefaultsToken = (profile?: PeerProfile) => {
   const autoAcceptIncoming = typeof profile?.defaults?.autoAcceptIncoming === "boolean" ? profile.defaults.autoAcceptIncoming : null
   const autoSaveIncoming = typeof profile?.defaults?.autoSaveIncoming === "boolean" ? profile.defaults.autoSaveIncoming : null
-  return autoAcceptIncoming === null || autoSaveIncoming === null ? "??" : `${autoAcceptIncoming ? "A" : "a"}${autoSaveIncoming ? "S" : "s"}`
+  if (autoAcceptIncoming === null || autoSaveIncoming === null) return "??"
+  return `${autoAcceptIncoming ? "A" : "a"}${!autoSaveIncoming ? "s" : profile?.streamingSaveIncoming === true ? "X" : "S"}`
 }
 
 export const displayPeerName = (name: string, id: string) => `${cleanName(name)}-${id}`

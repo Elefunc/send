@@ -14,10 +14,12 @@ describe("protocol cleaners", () => {
     expect(displayPeerName("Alice", "abc123")).toBe("alice-abc123")
   })
 
-  test("peerDefaultsToken encodes accept/save defaults with per-letter case", () => {
-    expect(peerDefaultsToken({ defaults: { autoAcceptIncoming: true, autoSaveIncoming: true } })).toBe("AS")
-    expect(peerDefaultsToken({ defaults: { autoAcceptIncoming: true, autoSaveIncoming: false } })).toBe("As")
+  test("peerDefaultsToken encodes accept/save defaults and streaming capability", () => {
+    expect(peerDefaultsToken({ defaults: { autoAcceptIncoming: true, autoSaveIncoming: true }, streamingSaveIncoming: true })).toBe("AX")
+    expect(peerDefaultsToken({ defaults: { autoAcceptIncoming: false, autoSaveIncoming: true }, streamingSaveIncoming: true })).toBe("aX")
+    expect(peerDefaultsToken({ defaults: { autoAcceptIncoming: true, autoSaveIncoming: true }, streamingSaveIncoming: false })).toBe("AS")
     expect(peerDefaultsToken({ defaults: { autoAcceptIncoming: false, autoSaveIncoming: true } })).toBe("aS")
+    expect(peerDefaultsToken({ defaults: { autoAcceptIncoming: true, autoSaveIncoming: false }, streamingSaveIncoming: true })).toBe("As")
     expect(peerDefaultsToken({ defaults: { autoAcceptIncoming: false, autoSaveIncoming: false } })).toBe("as")
     expect(peerDefaultsToken()).toBe("??")
   })

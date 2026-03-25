@@ -230,6 +230,7 @@ export const sanitizeProfile = (profile?: PeerProfile): PeerProfile => ({
     autoAcceptIncoming: typeof profile?.defaults?.autoAcceptIncoming === "boolean" ? profile.defaults.autoAcceptIncoming : undefined,
     autoSaveIncoming: typeof profile?.defaults?.autoSaveIncoming === "boolean" ? profile.defaults.autoSaveIncoming : undefined,
   },
+  streamingSaveIncoming: typeof profile?.streamingSaveIncoming === "boolean" ? profile.streamingSaveIncoming : undefined,
   ready: !!profile?.ready,
   error: cleanText(profile?.error, 120),
 })
@@ -254,6 +255,7 @@ export const localProfileFromResponse = (data: unknown, error = ""): PeerProfile
       ip: cleaned(value?.hs?.["cf-connecting-ip"] || value?.hs?.["x-real-ip"], 80),
     },
     ua: buildCliProfile().ua,
+    streamingSaveIncoming: true,
     ready: !!value?.cf,
     error,
   })
@@ -1175,6 +1177,7 @@ export class SendSession {
         autoAcceptIncoming: this.autoAcceptIncoming,
         autoSaveIncoming: this.autoSaveIncoming,
       },
+      streamingSaveIncoming: true,
     })
   }
 
