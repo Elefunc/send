@@ -1,12 +1,12 @@
 import { resolve } from "node:path"
 import { BACKEND_RAW_WRITE_MARKER, rgb, ui, type BackendRawWrite, type BadgeVariant, type TextStyle, type UiEvent, type VNode } from "@rezi-ui/core"
 import { createNodeApp } from "@rezi-ui/node"
-import { applyInputEditEvent } from "../../node_modules/@rezi-ui/core/dist/runtime/inputEditor.js"
 import { inspectLocalFile } from "../core/files"
 import { isSessionAbortedError, SendSession, type PeerSnapshot, type SessionConfig, type SessionSnapshot, type TransferSnapshot } from "../core/session"
 import { cleanLocalId, cleanName, cleanRoom, displayPeerName, fallbackName, formatBytes, type LogEntry, peerDefaultsToken, type PeerProfile, uid } from "../core/protocol"
 import { FILE_SEARCH_VISIBLE_ROWS, type FileSearchEvent, type FileSearchMatch, type FileSearchRequest } from "./file-search-protocol"
 import { deriveFileSearchScope, formatFileSearchDisplayPath, normalizeSearchQuery, offsetFileSearchMatchIndices } from "./file-search"
+import { applyInputEditEvent } from "./input-editor"
 import { installCheckboxClickPatch } from "../../runtime/rezi-checkbox-click"
 
 type Notice = { text: string; variant: "info" | "success" | "warning" | "error" }
