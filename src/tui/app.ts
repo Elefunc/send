@@ -130,7 +130,7 @@ const HEADING_TEXT_STYLE = { fg: rgb(255, 255, 255), bold: true } as const
 const MUTED_TEXT_STYLE = { fg: rgb(159, 166, 178) } as const
 const DEFAULT_WEB_URL = "https://rtme.sh/"
 const DEFAULT_SAVE_DIR = resolve(process.cwd())
-const ABOUT_ELEFUNC_URL = "https://elefunc.com/send"
+const ABOUT_ELEFUNC_URL = "https://rtme.sh/send"
 const ABOUT_TITLE = "About Send"
 const ABOUT_INTRO = "Peer-to-Peer Transfers – Web & CLI"
 const ABOUT_SUMMARY = "Join the same room, see who is there, and offer files directly to selected peers."
@@ -860,8 +860,8 @@ const renderAboutModal = (_state: TuiState, actions: TuiActions) => {
   actions: [
     ui.link({
       id: "about-elefunc-link",
-      label: "elefunc.com/send",
-      accessibleLabel: "Open Elefunc Send page",
+      label: "rtme.sh/send",
+      accessibleLabel: "Open rtme.sh Send page",
       url: ABOUT_ELEFUNC_URL,
     }),
     actionButton("close-about", "Close", actions.closeAbout, "primary"),
@@ -882,8 +882,8 @@ const renderInviteDropdown = (state: TuiState, actions: TuiActions) => ui.dropdo
   anchorId: ROOM_INVITE_BUTTON_ID,
   position: "below-end",
   items: [
-    { id: "web", label: "WEB", shortcut: inviteWebLabel(state) },
     { id: "cli", label: "CLI", shortcut: inviteCliText(state) },
+    { id: "web", label: "WEB", shortcut: inviteWebLabel(state) },
   ],
   onSelect: item => { if (item.id === "web") actions.copyWebInvite(); if (item.id === "cli") actions.copyCliInvite() },
   onClose: actions.closeInviteDropdown,

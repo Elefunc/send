@@ -222,9 +222,9 @@ describe("TUI view", () => {
     expect(view.findById("about-cli-label")).toBe(null)
     expect(view.findById("about-web-link-label")).toBe(null)
     expect(elefunc.kind).toBe("link")
-    expect(elefunc.props.label).toBe("elefunc.com/send")
-    expect(elefunc.props.accessibleLabel).toBe("Open Elefunc Send page")
-    expect(elefunc.props.url).toBe("https://elefunc.com/send")
+    expect(elefunc.props.label).toBe("rtme.sh/send")
+    expect(elefunc.props.accessibleLabel).toBe("Open rtme.sh Send page")
+    expect(elefunc.props.url).toBe("https://rtme.sh/send")
     expect(close.kind).toBe("button")
     expect(close.props.label).toBe("Close")
   })
@@ -424,8 +424,8 @@ describe("TUI view", () => {
     expect(inviteDropdown.props.anchorId).toBe("room-invite-button")
     expect(inviteDropdown.props.position).toBe("below-end")
     expect(inviteDropdown.props.items).toEqual([
-      { id: "web", label: "WEB", shortcut: "rtme.sh/#room=demo&clean=0&accept=0&offer=0&save=0" },
       { id: "cli", label: "CLI", shortcut: "bunx rtme.sh --room demo --clean 0 --accept 0 --offer 0 --save 0" },
+      { id: "web", label: "WEB", shortcut: "rtme.sh/#room=demo&clean=0&accept=0&offer=0&save=0" },
     ])
   })
 
