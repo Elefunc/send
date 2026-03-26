@@ -1,5 +1,5 @@
 import { resolve } from "node:path"
-import { rgb, ui, type BadgeVariant, type TextStyle, type UiEvent, type VNode } from "@rezi-ui/core"
+import { BACKEND_RAW_WRITE_MARKER, rgb, ui, type BackendRawWrite, type BadgeVariant, type TextStyle, type UiEvent, type VNode } from "@rezi-ui/core"
 import { createNodeApp } from "@rezi-ui/node"
 import { applyInputEditEvent } from "../../node_modules/@rezi-ui/core/dist/runtime/inputEditor.js"
 import { inspectLocalFile } from "../core/files"
@@ -56,6 +56,7 @@ export interface TuiState {
   peerSelectionByRoom: Map<string, Map<string, boolean>>
   snapshot: SessionSnapshot
   aboutOpen: boolean
+  inviteDropdownOpen: boolean
   peerSearch: string
   focusedId: string | null
   roomInput: string
@@ -81,6 +82,10 @@ export interface TuiActions {
   toggleEvents: TuiAction
   openAbout: TuiAction
   closeAbout: TuiAction
+  toggleInviteDropdown: TuiAction
+  closeInviteDropdown: TuiAction
+  copyWebInvite: TuiAction
+  copyCliInvite: TuiAction
   jumpToRandomRoom: TuiAction
   commitRoom: TuiAction
   setRoomInput: (value: string) => void
@@ -115,21 +120,22 @@ const ROOM_INPUT_ID = "room-input"
 const NAME_INPUT_ID = "name-input"
 const PEER_SEARCH_INPUT_ID = "peer-search-input"
 const DRAFT_INPUT_ID = "draft-input"
+const ROOM_INVITE_BUTTON_ID = "room-invite-button"
+const INVITE_DROPDOWN_ID = "room-invite-dropdown"
 const ABOUT_TRIGGER_ID = "open-about"
 const TRANSPARENT_BORDER_STYLE = { fg: rgb(7, 10, 12) } as const
 const METRIC_BORDER_STYLE = { fg: rgb(20, 25, 32) } as const
 const PRIMARY_TEXT_STYLE = { fg: rgb(255, 255, 255) } as const
 const HEADING_TEXT_STYLE = { fg: rgb(255, 255, 255), bold: true } as const
 const MUTED_TEXT_STYLE = { fg: rgb(159, 166, 178) } as const
-const DEFAULT_WEB_URL = "https://send.rt.ht/"
+const DEFAULT_WEB_URL = "https://rtme.sh/"
 const DEFAULT_SAVE_DIR = resolve(process.cwd())
 const ABOUT_ELEFUNC_URL = "https://elefunc.com/send"
 const ABOUT_TITLE = "About Send"
 const ABOUT_INTRO = "Peer-to-Peer Transfers – Web & CLI"
 const ABOUT_SUMMARY = "Join the same room, see who is there, and offer files directly to selected peers."
 const ABOUT_RUNTIME = "Send uses lightweight signaling to discover peers and negotiate WebRTC. Files move over WebRTC data channels, using direct paths when possible and TURN relay when needed."
-const ABOUT_CLI_LABEL = "bunx @elefunc/send@latest"
-const ABOUT_WEB_LINK_LABEL = "Web"
+const COPY_SERVICE_URL = "https://copy.rt.ht/"
 const TRANSFER_DIRECTION_ARROW = {
   out: { glyph: "↗", style: { fg: rgb(170, 217, 76), bold: true } },
   in: { glyph: "↙", style: { fg: rgb(240, 113, 120), bold: true } },
@@ -157,6 +163,12 @@ type ProcessSignalLike = {
   off?: (signal: TuiQuitSignal, handler: () => void) => unknown
   removeListener?: (signal: TuiQuitSignal, handler: () => void) => unknown
 }
+type BunSpawn = (cmd: string[], options: {
+  stdin?: "pipe" | "inherit" | "ignore"
+  stdout?: "pipe" | "inherit" | "ignore"
+  stderr?: "pipe" | "inherit" | "ignore"
+}) => { unref?: () => void }
+type BunLike = { spawn?: BunSpawn }
 type ShareUrlState = Pick<TuiState, "snapshot" | "hideTerminalPeers" | "autoAcceptIncoming" | "autoOfferOutgoing" | "autoSaveIncoming">
 type ShareCliState = ShareUrlState & Pick<TuiState, "sessionSeed" | "eventsExpanded">
 const shellQuote = (value: string) => safeShellArgPattern.test(value) ? value : `'${value.replaceAll("'", `'\"'\"'`)}'`
@@ -203,8 +215,29 @@ const renderWebUrl = (state: ShareUrlState, baseUrl = DEFAULT_WEB_URL, omitDefau
   url.hash = buildHashParams(state, omitDefaults).toString()
   return url.toString()
 }
+const schemeLessUrlText = (text: string) => text.replace(/^[a-z]+:\/\//, "")
+export const inviteWebLabel = (state: ShareUrlState, baseUrl = resolveWebUrlBase()) => schemeLessUrlText(webInviteUrl(state, baseUrl))
+export const inviteCliPackageName = (baseUrl = resolveWebUrlBase()) => new URL(resolveWebUrlBase(baseUrl)).hostname
+export const inviteCliCommand = (state: ShareUrlState) => {
+  const args: string[] = []
+  appendCliFlag(args, "--room", state.snapshot.room)
+  appendToggleCliFlags(args, state)
+  return args.join(" ")
+}
+export const inviteCliText = (state: ShareUrlState, baseUrl = resolveWebUrlBase()) => `bunx ${inviteCliPackageName(baseUrl)} ${inviteCliCommand(state)}`
+export const inviteCopyUrl = (text: string) => `${COPY_SERVICE_URL}#${new URLSearchParams({ text })}`
+export const buildOsc52ClipboardSequence = (text: string) => text ? `\u001b]52;c;${Buffer.from(text).toString("base64")}\u0007` : ""
+export const externalOpenCommand = (url: string, platform = process.platform) =>
+  platform === "darwin" ? ["open", url]
+    : platform === "win32" ? ["cmd.exe", "/c", "start", "", url]
+      : ["xdg-open", url]
+const getBackendRawWriter = (backend: unknown): BackendRawWrite | null => {
+  const marker = (backend as Record<string, unknown>)[BACKEND_RAW_WRITE_MARKER]
+  return typeof marker === "function" ? marker as BackendRawWrite : null
+}
+const getBunRuntime = () => (globalThis as typeof globalThis & { Bun?: BunLike }).Bun ?? null
 const renderCliCommand = (state: ShareCliState, { includeSelf = false, includePrefix = false } = {}) => {
-  const args = includePrefix ? ["bunx", "@elefunc/send@latest"] : []
+  const args = includePrefix ? ["bunx", "rtme.sh"] : []
   appendCliFlag(args, "--room", state.snapshot.room)
   if (includeSelf) appendCliFlag(args, "--self", displayPeerName(state.snapshot.name, state.snapshot.localId))
   appendToggleCliFlags(args, state)
@@ -267,6 +300,10 @@ export const createNoopTuiActions = (): TuiActions => ({
   toggleEvents: noop,
   openAbout: noop,
   closeAbout: noop,
+  toggleInviteDropdown: noop,
+  closeInviteDropdown: noop,
+  copyWebInvite: noop,
+  copyCliInvite: noop,
   jumpToRandomRoom: noop,
   commitRoom: noop,
   setRoomInput: noop,
@@ -702,6 +739,7 @@ export const createInitialTuiState = (initialConfig: SessionConfig, showEvents =
     peerSelectionByRoom,
     snapshot: session.snapshot(),
     aboutOpen: false,
+    inviteDropdownOpen: false,
     peerSearch: "",
     focusedId: null,
     roomInput: sessionSeed.room,
@@ -810,12 +848,7 @@ const renderHeader = (state: TuiState, actions: TuiActions) => denseSection({
   ],
 }, [])
 
-const renderAboutModal = (state: TuiState, actions: TuiActions) => {
-  const cliCommand = aboutCliCommand(state)
-  const cliCopyText = `${ABOUT_CLI_LABEL} ${cliCommand}`
-  const cliCopyUrl = `https://copy.rt.ht/#${new URLSearchParams({ text: cliCopyText })}`
-  const currentWebUrl = aboutWebUrl(state)
-  const currentWebLabel = aboutWebLabel(state)
+const renderAboutModal = (_state: TuiState, actions: TuiActions) => {
   return ui.modal({
   id: "about-modal",
   title: ABOUT_TITLE,
@@ -823,24 +856,6 @@ const renderAboutModal = (state: TuiState, actions: TuiActions) => {
     ui.text(ABOUT_INTRO, { id: "about-intro", variant: "heading", wrap: true }),
     ui.text(ABOUT_SUMMARY, { id: "about-summary", wrap: true }),
     ui.text(ABOUT_RUNTIME, { id: "about-runtime", wrap: true }),
-    ui.column({ gap: 0 }, [
-      ui.text(ABOUT_CLI_LABEL, { id: "about-cli-label", variant: "caption", wrap: true }),
-      ui.link({
-        id: "about-current-cli",
-        label: cliCommand,
-        accessibleLabel: "Copy current CLI command",
-        url: cliCopyUrl,
-      }),
-    ]),
-    ui.column({ gap: 0 }, [
-      ui.text(ABOUT_WEB_LINK_LABEL, { id: "about-web-link-label", variant: "caption", wrap: true }),
-      ui.link({
-        id: "about-current-web-link",
-        label: currentWebLabel,
-        accessibleLabel: "Open current web link",
-        url: currentWebUrl,
-      }),
-    ]),
   ]),
   actions: [
     ui.link({
@@ -862,6 +877,18 @@ const renderAboutModal = (state: TuiState, actions: TuiActions) => {
 })
 }
 
+const renderInviteDropdown = (state: TuiState, actions: TuiActions) => ui.dropdown({
+  id: INVITE_DROPDOWN_ID,
+  anchorId: ROOM_INVITE_BUTTON_ID,
+  position: "below-end",
+  items: [
+    { id: "web", label: "WEB", shortcut: inviteWebLabel(state) },
+    { id: "cli", label: "CLI", shortcut: inviteCliText(state) },
+  ],
+  onSelect: item => { if (item.id === "web") actions.copyWebInvite(); if (item.id === "cli") actions.copyCliInvite() },
+  onClose: actions.closeInviteDropdown,
+})
+
 const renderRoomCard = (state: TuiState, actions: TuiActions) => denseSection({
   id: "room-card",
 }, [
@@ -877,11 +904,13 @@ const renderRoomCard = (state: TuiState, actions: TuiActions) => denseSection({
       }),
     ]),
     ui.row({ id: "room-invite-slot", width: 6, justify: "center", items: "center" }, [
-      ui.link({
-        id: "room-invite-link",
+      ui.button({
+        id: ROOM_INVITE_BUTTON_ID,
         label: "📋",
-        accessibleLabel: "Open invite link",
-        url: webInviteUrl(state),
+        accessibleLabel: "Open invite links",
+        onPress: actions.toggleInviteDropdown,
+        dsVariant: "ghost",
+        intent: "secondary",
       }),
     ]),
   ]),
@@ -1305,9 +1334,12 @@ export const renderTuiView = (state: TuiState, actions: TuiActions): VNode => {
       }, [page])
     : page
 
-  return state.aboutOpen
-    ? ui.layers([basePage, renderAboutModal(state, actions)])
-    : basePage
+  const overlays = [
+    state.inviteDropdownOpen && !state.aboutOpen ? renderInviteDropdown(state, actions) : null,
+    state.aboutOpen ? renderAboutModal(state, actions) : null,
+  ].filter((overlay): overlay is VNode => !!overlay)
+
+  return overlays.length ? ui.layers([basePage, ...overlays]) : basePage
 }
 
 const withNotice = (state: TuiState, notice: Notice): TuiState => ({ ...state, notice })
@@ -1339,6 +1371,38 @@ export const startTui = async (initialConfig: SessionConfig, launchOptions: TuiL
   let previewSessionRoot: string | null = null
   let draftCursor = state.draftInput.length
   let draftCursorBeforeEvent = draftCursor
+  let osc52SupportPromise: Promise<boolean> | null = null
+
+  const ensureOsc52Support = () => osc52SupportPromise ??= app.backend.getCaps().then(caps => caps.supportsOsc52, () => false)
+  const openExternalUrl = (url: string) => {
+    try {
+      const bun = getBunRuntime()
+      const child = bun?.spawn?.(externalOpenCommand(url), { stdin: "ignore", stdout: "ignore", stderr: "ignore" })
+      if (!child) return false
+      child.unref?.()
+      return true
+    } catch {
+      return false
+    }
+  }
+  const copyInvitePayload = async (payload: string, label: "WEB" | "CLI") => {
+    const closeDropdown = (notice: Notice) => commit(current => withNotice({ ...current, inviteDropdownOpen: false }, notice))
+    const rawWrite = getBackendRawWriter(app.backend)
+    if (rawWrite && await ensureOsc52Support()) {
+      const sequence = buildOsc52ClipboardSequence(payload)
+      if (sequence) {
+        try {
+          rawWrite(sequence)
+          closeDropdown({ text: `Copied ${label} invite.`, variant: "success" })
+          return
+        } catch {}
+      }
+    }
+    const opened = openExternalUrl(inviteCopyUrl(payload))
+    closeDropdown(opened
+      ? { text: `Opened ${label} copy link.`, variant: "info" }
+      : { text: `Unable to copy ${label} invite.`, variant: "error" })
+  }
 
   const flushUpdate = () => {
     if (updateQueued || stopping || cleanedUp) return
@@ -1603,6 +1667,7 @@ export const startTui = async (initialConfig: SessionConfig, launchOptions: TuiL
       sessionSeed: nextSeed,
       peerSelectionByRoom: current.peerSelectionByRoom,
       snapshot: nextSession.snapshot(),
+      inviteDropdownOpen: false,
       peerSearch: "",
       roomInput: nextSeed.room,
       nameInput: visibleNameInput(nextSeed.name),
@@ -1680,8 +1745,12 @@ export const startTui = async (initialConfig: SessionConfig, launchOptions: TuiL
 
   const actions: TuiActions = {
     toggleEvents: () => commit(current => ({ ...withNotice(current, { text: current.eventsExpanded ? "Events hidden." : "Events shown.", variant: "info" }), eventsExpanded: !current.eventsExpanded })),
-    openAbout: () => commit(current => ({ ...current, aboutOpen: true })),
+    openAbout: () => commit(current => ({ ...current, aboutOpen: true, inviteDropdownOpen: false })),
     closeAbout: () => commit(current => ({ ...current, aboutOpen: false })),
+    toggleInviteDropdown: () => commit(current => ({ ...current, inviteDropdownOpen: !current.inviteDropdownOpen })),
+    closeInviteDropdown: () => commit(current => current.inviteDropdownOpen ? { ...current, inviteDropdownOpen: false } : current),
+    copyWebInvite: () => { void copyInvitePayload(webInviteUrl(state), "WEB") },
+    copyCliInvite: () => { void copyInvitePayload(inviteCliText(state), "CLI") },
     jumpToRandomRoom: () => replaceSession({ ...state.sessionSeed, room: uid(8) }, "Joined a new room."),
     commitRoom,
     setRoomInput: value => commit(current => ({ ...current, roomInput: value })),
@@ -1953,6 +2022,7 @@ export const startTui = async (initialConfig: SessionConfig, launchOptions: TuiL
   try {
     bindSession(state.session)
     await app.start()
+    void ensureOsc52Support()
     await quitController.promise
   } finally {
     try {

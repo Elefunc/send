@@ -5,7 +5,7 @@ import type { PeerSnapshot, TransferSnapshot } from "../src/core/session"
 import { fallbackName } from "../src/core/protocol"
 
 const { createTestRenderer, rgb, ui } = reziCore
-const { aboutCliCommand, aboutWebLabel, aboutWebUrl, canAcceptFilePreviewWithRight, canNavigateDraftHistory, clampFilePreviewSelectedIndex, consumeSatisfiedFocusRequest, createInitialTuiState, createNoopTuiActions, createQuitController, deriveBootFocusState, ensureFilePreviewScrollTop, filePreviewVisible, groupTransfersByPeer, isDraftHistoryEntryPoint, isEditableFocusId, moveDraftHistory, moveFilePreviewSelection, previewPathSegments, previewSegmentStyle, pushDraftHistoryEntry, renderTuiView, renderedReadySelectedPeers, resolveWebUrlBase, resumeCliCommand, resumeOutputLines, resumeWebUrl, scheduleBootNameJump, shouldSwallowQQuit, transferSummaryStats, visiblePanes, webInviteUrl, withAcceptedDraftInput } = tuiRuntime
+const { aboutCliCommand, aboutWebLabel, aboutWebUrl, buildOsc52ClipboardSequence, canAcceptFilePreviewWithRight, canNavigateDraftHistory, clampFilePreviewSelectedIndex, consumeSatisfiedFocusRequest, createInitialTuiState, createNoopTuiActions, createQuitController, deriveBootFocusState, ensureFilePreviewScrollTop, externalOpenCommand, filePreviewVisible, groupTransfersByPeer, inviteCliText, inviteCopyUrl, inviteWebLabel, isDraftHistoryEntryPoint, isEditableFocusId, moveDraftHistory, moveFilePreviewSelection, previewPathSegments, previewSegmentStyle, pushDraftHistoryEntry, renderTuiView, renderedReadySelectedPeers, resolveWebUrlBase, resumeCliCommand, resumeOutputLines, resumeWebUrl, scheduleBootNameJump, shouldSwallowQQuit, transferSummaryStats, visiblePanes, webInviteUrl, withAcceptedDraftInput } = tuiRuntime
 
 const createWideRenderer = () => createTestRenderer({ viewport: { cols: 180, rows: 60 } })
 const hasRenderedText = (view: ReturnType<ReturnType<typeof createWideRenderer>["render"]>, value: string) =>
@@ -184,7 +184,7 @@ describe("TUI view", () => {
     expect(about.props.label).toBe("About")
   })
 
-  test("renders an About modal with the shared Send copy and links", () => {
+  test("renders an About modal with the shared Send copy and no share links", () => {
     const renderer = createWideRenderer()
     const state = createInitialTuiState({ room: "demo", name: "alice", localId: "12345678", reconnectSocket: false }, false)
     state.aboutOpen = true
@@ -192,15 +192,11 @@ describe("TUI view", () => {
     const modal = view.findById("about-modal")
     const close = view.findById("close-about")
     const elefunc = view.findById("about-elefunc-link")
-    const currentWebLink = view.findById("about-current-web-link")
     const intro = view.findById("about-intro")
     const summary = view.findById("about-summary")
     const runtime = view.findById("about-runtime")
-    const cliLabel = view.findById("about-cli-label")
-    const cliValue = view.findById("about-current-cli")
-    const webLabel = view.findById("about-web-link-label")
-    expect(modal === null || close === null || elefunc === null || currentWebLink === null || intro === null || summary === null || runtime === null || cliLabel === null || cliValue === null || webLabel === null).toBe(false)
-    if (!modal || !close || !elefunc || !currentWebLink || !intro || !summary || !runtime || !cliLabel || !cliValue || !webLabel) throw new Error("missing about modal nodes")
+    expect(modal === null || close === null || elefunc === null || intro === null || summary === null || runtime === null).toBe(false)
+    if (!modal || !close || !elefunc || !intro || !summary || !runtime) throw new Error("missing about modal nodes")
     expect(modal.kind).toBe("modal")
     expect(modal.props.title).toBe("About Send")
     expect(modal.props.frameStyle).toEqual({ background: rgb(0, 0, 0) })
@@ -210,15 +206,10 @@ describe("TUI view", () => {
     expect(intro.props.wrap).toBe(true)
     expect(summary.props.wrap).toBe(true)
     expect(runtime.props.wrap).toBe(true)
-    expect(cliLabel.props.wrap).toBe(true)
-    expect(webLabel.props.wrap).toBe(true)
     expect(hasRenderedText(view, "Peer-to-peer file transfer")).toBe(false)
     expect(hasRenderedText(view, "Peer-to-Peer Transfers – Web & CLI")).toBe(true)
     expect(hasRenderedText(view, "Join the same room, see who is there, and offer files directly to selected peers.")).toBe(true)
     expect(hasRenderedText(view, "Send uses lightweight signaling to discover peers and negotiate WebRTC. Files move over WebRTC data channels, using direct paths when possible and TURN relay when needed.")).toBe(true)
-    expect(hasRenderedText(view, "bunx @elefunc/send@latest")).toBe(true)
-    expect(hasRenderedText(view, "--room demo")).toBe(true)
-    expect(hasRenderedText(view, "Web")).toBe(true)
     expect(hasRenderedText(view, "--self alice-12345678")).toBe(false)
     expect(hasRenderedText(view, "Elefunc, Inc.")).toBe(false)
     expect(hasRenderedText(view, "What it is")).toBe(false)
@@ -226,16 +217,14 @@ describe("TUI view", () => {
     expect(hasRenderedText(view, "How it works")).toBe(false)
     expect(hasRenderedText(view, "Who made it")).toBe(false)
     expect(hasRenderedText(view, "Under the hood")).toBe(false)
-    expect(cliValue.kind).toBe("link")
-    expect(cliValue.props.label).toBe("--room demo")
-    expect(cliValue.props.url).toBe("https://copy.rt.ht/#text=bunx+%40elefunc%2Fsend%40latest+--room+demo")
+    expect(view.findById("about-current-cli")).toBe(null)
+    expect(view.findById("about-current-web-link")).toBe(null)
+    expect(view.findById("about-cli-label")).toBe(null)
+    expect(view.findById("about-web-link-label")).toBe(null)
     expect(elefunc.kind).toBe("link")
     expect(elefunc.props.label).toBe("elefunc.com/send")
     expect(elefunc.props.accessibleLabel).toBe("Open Elefunc Send page")
     expect(elefunc.props.url).toBe("https://elefunc.com/send")
-    expect(currentWebLink.kind).toBe("link")
-    expect(currentWebLink.props.label).toBe("send.rt.ht/#room=demo")
-    expect(currentWebLink.props.url).toBe("https://send.rt.ht/#room=demo")
     expect(close.kind).toBe("button")
     expect(close.props.label).toBe("Close")
   })
@@ -396,30 +385,29 @@ describe("TUI view", () => {
     expect(view.findById("name-input") === null).toBe(false)
   })
 
-  test("renders the web-app-style room shell", () => {
+  test("renders the web-app-style room shell with an invite dropdown button", () => {
     const renderer = createWideRenderer()
     const state = createInitialTuiState({ room: "demo", name: "alice", reconnectSocket: false }, false)
     const view = renderer.render(renderTuiView(state, createNoopTuiActions()))
     const newRoom = view.findById("new-room")
     const inviteSlot = view.findById("room-invite-slot")
-    const inviteLink = view.findById("room-invite-link")
+    const inviteButton = view.findById("room-invite-button")
     expect(view.findText("Room")).toBe(null)
     expect(view.findText("Signal idle")).toBe(null)
-    expect(newRoom === null || inviteSlot === null || inviteLink === null).toBe(false)
-    if (!newRoom || !inviteSlot || !inviteLink) throw new Error("missing room row controls")
+    expect(newRoom === null || inviteSlot === null || inviteButton === null).toBe(false)
+    if (!newRoom || !inviteSlot || !inviteButton) throw new Error("missing room row controls")
     expect("label" in newRoom.props && newRoom.props.label).toBe("🏠")
     expect(view.findById("room-input") === null).toBe(false)
     expect(inviteSlot.kind).toBe("row")
     expect(inviteSlot.props.width).toBe(newRoom.rect.w)
-    expect(inviteLink.kind).toBe("link")
-    expect(inviteLink.props.label).toBe("📋")
-    expect(inviteLink.props.accessibleLabel).toBe("Open invite link")
-    expect(inviteLink.props.url).toBe("https://send.rt.ht/#room=demo")
-    expect(inviteLink.rect.x - inviteSlot.rect.x).toBe(inviteSlot.rect.x + inviteSlot.rect.w - (inviteLink.rect.x + inviteLink.rect.w))
+    expect(inviteButton.kind).toBe("button")
+    expect(inviteButton.props.label).toBe("📋")
+    expect(inviteButton.props.accessibleLabel).toBe("Open invite links")
+    expect(inviteButton.rect.x - inviteSlot.rect.x).toBe(inviteSlot.rect.x + inviteSlot.rect.w - (inviteButton.rect.x + inviteButton.rect.w))
     expect(hasRenderedText(view, "📋")).toBe(true)
   })
 
-  test("uses the committed state for the room invite link and updates it with current toggles", () => {
+  test("renders invite dropdown labels from the committed state and current toggles", () => {
     const renderer = createWideRenderer()
     const state = createInitialTuiState({ room: "demo", reconnectSocket: false }, false)
     state.roomInput = "draft-room"
@@ -427,11 +415,18 @@ describe("TUI view", () => {
     state.autoAcceptIncoming = false
     state.autoOfferOutgoing = false
     state.autoSaveIncoming = false
+    state.inviteDropdownOpen = true
     const view = renderer.render(renderTuiView(state, createNoopTuiActions()))
-    const inviteLink = view.findById("room-invite-link")
-    expect(inviteLink === null).toBe(false)
-    if (!inviteLink) throw new Error("missing room invite link")
-    expect(inviteLink.props.url).toBe("https://send.rt.ht/#room=demo&clean=0&accept=0&offer=0&save=0")
+    const inviteDropdown = view.findById("room-invite-dropdown")
+    expect(inviteDropdown === null).toBe(false)
+    if (!inviteDropdown) throw new Error("missing room invite dropdown")
+    expect(inviteDropdown.kind).toBe("dropdown")
+    expect(inviteDropdown.props.anchorId).toBe("room-invite-button")
+    expect(inviteDropdown.props.position).toBe("below-end")
+    expect(inviteDropdown.props.items).toEqual([
+      { id: "web", label: "WEB", shortcut: "rtme.sh/#room=demo&clean=0&accept=0&offer=0&save=0" },
+      { id: "cli", label: "CLI", shortcut: "bunx rtme.sh --room demo --clean 0 --accept 0 --offer 0 --save 0" },
+    ])
   })
 
   test("uses SEND_WEB_URL for the room invite link base and falls back on invalid values", async () => {
@@ -443,15 +438,38 @@ describe("TUI view", () => {
 
     await withEnv({ SEND_WEB_URL: "not a valid url" }, () => {
       const state = createInitialTuiState({ room: "demo", reconnectSocket: false }, false)
-      expect(resolveWebUrlBase()).toBe("https://send.rt.ht/")
-      expect(webInviteUrl(state)).toBe("https://send.rt.ht/#room=demo")
+      expect(resolveWebUrlBase()).toBe("https://rtme.sh/")
+      expect(webInviteUrl(state)).toBe("https://rtme.sh/#room=demo")
     })
+  })
+
+  test("renders scheme-less WEB preview labels and host-derived CLI invite text", async () => {
+    const state = createInitialTuiState({ room: "demo", reconnectSocket: false }, false)
+    expect(inviteWebLabel(state)).toBe("rtme.sh/#room=demo")
+    expect(inviteCliText(state)).toBe("bunx rtme.sh --room demo")
+
+    await withEnv({ SEND_WEB_URL: "https://example.com/send/" }, () => {
+      expect(inviteWebLabel(state)).toBe("example.com/send/#room=demo")
+      expect(inviteCliText(state)).toBe("bunx example.com --room demo")
+    })
+  })
+
+  test("builds copy service URLs and OSC 52 clipboard sequences for invite payloads", () => {
+    expect(inviteCopyUrl("bunx rtme.sh --room demo")).toBe("https://copy.rt.ht/#text=bunx+rtme.sh+--room+demo")
+    expect(buildOsc52ClipboardSequence("copy me")).toBe("\u001b]52;c;Y29weSBtZQ==\u0007")
+    expect(buildOsc52ClipboardSequence("")).toBe("")
+  })
+
+  test("builds cross-platform external open commands for copy fallback URLs", () => {
+    expect(externalOpenCommand("https://copy.rt.ht/#text=demo", "darwin")).toEqual(["open", "https://copy.rt.ht/#text=demo"])
+    expect(externalOpenCommand("https://copy.rt.ht/#text=demo", "win32")).toEqual(["cmd.exe", "/c", "start", "", "https://copy.rt.ht/#text=demo"])
+    expect(externalOpenCommand("https://copy.rt.ht/#text=demo", "linux")).toEqual(["xdg-open", "https://copy.rt.ht/#text=demo"])
   })
 
   test("omits default values from the About web link and CLI command, but keeps room", () => {
     const state = createInitialTuiState({ room: "demo", name: "alice", localId: "12345678", reconnectSocket: false }, false)
-    expect(aboutWebUrl(state)).toBe("https://send.rt.ht/#room=demo")
-    expect(aboutWebLabel(state)).toBe("send.rt.ht/#room=demo")
+    expect(aboutWebUrl(state)).toBe("https://rtme.sh/#room=demo")
+    expect(aboutWebLabel(state)).toBe("rtme.sh/#room=demo")
     expect(aboutCliCommand(state)).toBe("--room demo")
   })
 
@@ -471,7 +489,7 @@ describe("TUI view", () => {
     state.autoOfferOutgoing = false
     state.autoSaveIncoming = false
     state.eventsExpanded = true
-    expect(aboutWebUrl(state)).toBe("https://send.rt.ht/#room=demo&clean=0&accept=0&offer=0&save=0")
+    expect(aboutWebUrl(state)).toBe("https://rtme.sh/#room=demo&clean=0&accept=0&offer=0&save=0")
     expect(aboutCliCommand(state)).toBe("--room demo --clean 0 --accept 0 --offer 0 --save 0 --events --save-dir '/tmp/send files' --turn-url turn:turn.example.com:3478 --turn-url turns:turn.example.com:5349?transport=tcp --turn-username user --turn-credential pass")
   })
 
@@ -497,16 +515,16 @@ describe("TUI view", () => {
     state.autoOfferOutgoing = false
     state.autoSaveIncoming = false
 
-    expect(resumeWebUrl(state)).toBe("https://send.rt.ht/#room=demo&clean=0&accept=0&offer=0&save=0")
-    expect(resumeCliCommand(state)).toBe("bunx @elefunc/send@latest --room demo --self alice-12345678 --clean 0 --accept 0 --offer 0 --save 0 --events --save-dir '/tmp/send files' --turn-url turn:turn.example.com:3478 --turn-username user --turn-credential pass")
+    expect(resumeWebUrl(state)).toBe("https://rtme.sh/#room=demo&clean=0&accept=0&offer=0&save=0")
+    expect(resumeCliCommand(state)).toBe("bunx rtme.sh --room demo --self alice-12345678 --clean 0 --accept 0 --offer 0 --save 0 --events --save-dir '/tmp/send files' --turn-url turn:turn.example.com:3478 --turn-username user --turn-credential pass")
     expect(resumeOutputLines(state)).toEqual([
       "Rejoin with:",
       "",
       "Web",
-      "https://send.rt.ht/#room=demo&clean=0&accept=0&offer=0&save=0",
+      "https://rtme.sh/#room=demo&clean=0&accept=0&offer=0&save=0",
       "",
       "CLI",
-      "bunx @elefunc/send@latest --room demo --self alice-12345678 --clean 0 --accept 0 --offer 0 --save 0 --events --save-dir '/tmp/send files' --turn-url turn:turn.example.com:3478 --turn-username user --turn-credential pass",
+      "bunx rtme.sh --room demo --self alice-12345678 --clean 0 --accept 0 --offer 0 --save 0 --events --save-dir '/tmp/send files' --turn-url turn:turn.example.com:3478 --turn-username user --turn-credential pass",
       "",
     ])
   })
@@ -515,16 +533,16 @@ describe("TUI view", () => {
     const state = createInitialTuiState({ room: "demo", name: "alice", localId: "12345678", reconnectSocket: false }, false)
     state.snapshot = { ...state.snapshot, turnState: "idle", turn: "idle" }
 
-    expect(resumeWebUrl(state)).toBe("https://send.rt.ht/#room=demo")
-    expect(resumeCliCommand(state)).toBe("bunx @elefunc/send@latest --room demo --self alice-12345678")
+    expect(resumeWebUrl(state)).toBe("https://rtme.sh/#room=demo")
+    expect(resumeCliCommand(state)).toBe("bunx rtme.sh --room demo --self alice-12345678")
     expect(resumeOutputLines(state)).toEqual([
       "Rejoin with:",
       "",
       "Web",
-      "https://send.rt.ht/#room=demo",
+      "https://rtme.sh/#room=demo",
       "",
       "CLI",
-      "bunx @elefunc/send@latest --room demo --self alice-12345678",
+      "bunx rtme.sh --room demo --self alice-12345678",
       "",
     ])
   })
