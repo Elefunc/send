@@ -2,7 +2,7 @@ import { open, rename, type FileHandle } from "node:fs/promises"
 import { resolve } from "node:path"
 import type { RTCDataChannel, RTCIceCandidateInit, RTCIceServer } from "werift"
 import { RTCPeerConnection } from "werift"
-import { closeLocalFile, loadLocalFiles, pathExists, readFileChunk, removePath, saveIncomingFile, uniqueOutputPath, writeFileChunk, type LocalFile } from "./files"
+import { closeLocalFile, incomingOutputPath, loadLocalFiles, pathExists, readFileChunk, removePath, replaceOutputPath, saveIncomingFile, uniqueOutputPath, writeFileChunk, type LocalFile } from "./files"
 import {
   BASE_ICE_SERVERS,
   BUFFER_HIGH,
@@ -176,6 +176,7 @@ export interface SessionConfig {
   peerSelectionMemory?: Map<string, boolean>
   autoAcceptIncoming?: boolean
   autoSaveIncoming?: boolean
+  overwriteIncoming?: boolean
   turnUrls?: string[]
   turnUsername?: string
   turnCredential?: string
@@ -184,6 +185,8 @@ export interface SessionConfig {
 
 const LOG_LIMIT = 200
 const STATS_POLL_MS = 1000
+export const PULSE_PROBE_INTERVAL_MS = 15_000
+export const PULSE_STALE_MS = 45_000
 const PROFILE_URL = "https://ip.rt.ht/"
 export interface PeerConnectivitySnapshot {
   rttMs: number
@@ -194,9 +197,12 @@ export interface PeerConnectivitySnapshot {
 
 export type TurnState = "none" | "idle" | "used"
 export type PulseState = "idle" | "checking" | "open" | "error"
+export type SettledPulseState = "idle" | "open" | "error"
+export type SignalMetricState = "idle" | "connecting" | "checking" | "open" | "degraded" | "closed" | "error"
 
 export interface PulseSnapshot {
   state: PulseState
+  lastSettledState: SettledPulseState
   at: number
   ms: number
   error: string
@@ -206,7 +212,27 @@ const progressOf = (transfer: TransferState) => transfer.size ? Math.max(0, Math
 const isFinal = (transfer: TransferState) => FINAL_STATUSES.has(transfer.status as never)
 export const candidateTypeLabel = (type: string) => ({ host: "Direct", srflx: "NAT", prflx: "NAT", relay: "TURN" }[type] || "—")
 const emptyConnectivitySnapshot = (): PeerConnectivitySnapshot => ({ rttMs: Number.NaN, localCandidateType: "", remoteCandidateType: "", pathLabel: "—" })
-const emptyPulseSnapshot = (): PulseSnapshot => ({ state: "idle", at: 0, ms: 0, error: "" })
+const settledPulseState = (pulse?: Pick<PulseSnapshot, "state" | "lastSettledState"> | null): SettledPulseState =>
+  pulse?.lastSettledState === "open" || pulse?.lastSettledState === "error" || pulse?.lastSettledState === "idle"
+    ? pulse.lastSettledState
+    : pulse?.state === "open"
+      ? "open"
+      : pulse?.state === "error"
+        ? "error"
+        : "idle"
+const pulseIsFresh = (pulse: Pick<PulseSnapshot, "at" | "lastSettledState" | "state">, now = Date.now()) =>
+  settledPulseState(pulse) === "open" && Number.isFinite(pulse.at) && pulse.at > 0 && now - pulse.at <= PULSE_STALE_MS
+export const signalMetricState = (socketState: SocketState, pulse: PulseSnapshot, now = Date.now()): SignalMetricState => {
+  if (socketState === "error") return "error"
+  if (socketState === "closed") return "closed"
+  if (socketState === "connecting") return "connecting"
+  if (socketState === "idle") return "idle"
+  const lastSettled = settledPulseState(pulse)
+  if (lastSettled === "idle") return "checking"
+  if (lastSettled === "error") return "degraded"
+  return pulseIsFresh(pulse, now) ? "open" : "degraded"
+}
+const emptyPulseSnapshot = (): PulseSnapshot => ({ state: "idle", lastSettledState: "idle", at: 0, ms: 0, error: "" })
 
 export const sanitizeProfile = (profile?: PeerProfile): PeerProfile => ({
   geo: {
@@ -389,6 +415,7 @@ export class SendSession {
 
   private autoAcceptIncoming: boolean
   private autoSaveIncoming: boolean
+  private readonly overwriteIncoming: boolean
   private readonly reconnectSocket: boolean
   private iceServers: RTCIceServer[]
   private extraTurnServers: RTCIceServer[]
@@ -405,6 +432,7 @@ export class SendSession {
   private socketToken = 0
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private peerStatsTimer: ReturnType<typeof setInterval> | null = null
+  private pulseTimer: ReturnType<typeof setInterval> | null = null
   private readonly pendingRtcCloses = new Set<Promise<void>>()
   private lifecycleAbortController: AbortController | null = null
   private stopped = false
@@ -418,6 +446,7 @@ export class SendSession {
     this.peerSelectionMemory = config.peerSelectionMemory ?? new Map()
     this.autoAcceptIncoming = !!config.autoAcceptIncoming
     this.autoSaveIncoming = !!config.autoSaveIncoming
+    this.overwriteIncoming = !!config.overwriteIncoming
     this.reconnectSocket = config.reconnectSocket ?? true
     this.extraTurnServers = turnServers(config.turnUrls ?? [], config.turnUsername, config.turnCredential)
     this.iceServers = [...BASE_ICE_SERVERS, ...this.extraTurnServers]
@@ -460,6 +489,7 @@ export class SendSession {
     this.lifecycleAbortController?.abort()
     this.lifecycleAbortController = typeof AbortController === "function" ? new AbortController() : null
     this.startPeerStatsPolling()
+    this.startPulsePolling()
     void this.loadLocalProfile()
     void this.probePulse()
     this.connectSocket()
@@ -469,6 +499,7 @@ export class SendSession {
   async close() {
     this.stopped = true
     this.stopPeerStatsPolling()
+    this.stopPulsePolling()
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
     this.reconnectTimer = null
     this.lifecycleAbortController?.abort()
@@ -763,7 +794,7 @@ export class SendSession {
     if (transfer.savedPath) return transfer.savedPath
     if (!transfer.data && transfer.buffers?.length) transfer.data = Buffer.concat(transfer.buffers)
     if (!transfer.data) return null
-    transfer.savedPath = await saveIncomingFile(this.saveDir, transfer.name, transfer.data)
+    transfer.savedPath = await saveIncomingFile(this.saveDir, transfer.name, transfer.data, this.overwriteIncoming)
     transfer.savedAt ||= Date.now()
     this.emitTransferSaved(transfer)
     this.notify()
@@ -788,8 +819,8 @@ export class SendSession {
   }
 
   private async createIncomingDiskState(fileName: string): Promise<IncomingDiskState> {
-    const finalPath = await uniqueOutputPath(this.saveDir, fileName || "download", this.reservedSavePaths)
-    this.reservedSavePaths.add(finalPath)
+    const finalPath = await incomingOutputPath(this.saveDir, fileName || "download", this.overwriteIncoming, this.reservedSavePaths)
+    if (!this.overwriteIncoming) this.reservedSavePaths.add(finalPath)
     for (let attempt = 0; ; attempt += 1) {
       const tempPath = `${finalPath}.part.${uid(6)}${attempt ? `.${attempt}` : ""}`
       try {
@@ -805,7 +836,7 @@ export class SendSession {
         }
       } catch (error) {
         if ((error as NodeJS.ErrnoException | undefined)?.code === "EEXIST") continue
-        this.reservedSavePaths.delete(finalPath)
+        if (!this.overwriteIncoming) this.reservedSavePaths.delete(finalPath)
         throw error
       }
     }
@@ -875,12 +906,13 @@ export class SendSession {
         disk.closed = true
         await disk.handle.close()
       }
-      if (await pathExists(finalPath)) {
+      if (!this.overwriteIncoming && await pathExists(finalPath)) {
         this.reservedSavePaths.delete(finalPath)
         finalPath = await uniqueOutputPath(this.saveDir, transfer.name || "download", this.reservedSavePaths)
         this.reservedSavePaths.add(finalPath)
       }
-      await rename(disk.tempPath, finalPath)
+      if (this.overwriteIncoming) await replaceOutputPath(disk.tempPath, finalPath)
+      else await rename(disk.tempPath, finalPath)
       transfer.savedPath = finalPath
       transfer.savedAt ||= Date.now()
       return finalPath
@@ -950,6 +982,17 @@ export class SendSession {
     if (!this.peerStatsTimer) return
     clearInterval(this.peerStatsTimer)
     this.peerStatsTimer = null
+  }
+
+  private startPulsePolling() {
+    if (this.pulseTimer) return
+    this.pulseTimer = setInterval(() => void this.probePulse(), PULSE_PROBE_INTERVAL_MS)
+  }
+
+  private stopPulsePolling() {
+    if (!this.pulseTimer) return
+    clearInterval(this.pulseTimer)
+    this.pulseTimer = null
   }
 
   private async refreshPeerStats() {
@@ -1156,10 +1199,10 @@ export class SendSession {
       const response = await fetch(SIGNAL_PULSE_URL, { cache: "no-store", signal: timeoutSignal(3500, this.lifecycleAbortController?.signal) })
       if (!response.ok) throw new Error(`pulse ${response.status}`)
       if (this.stopped) return
-      this.pulse = { state: "open", at: Date.now(), ms: performance.now() - startedAt, error: "" }
+      this.pulse = { state: "open", lastSettledState: "open", at: Date.now(), ms: performance.now() - startedAt, error: "" }
     } catch (error) {
       if (this.stopped) return
-      this.pulse = { state: "error", at: Date.now(), ms: 0, error: `${error}` }
+      this.pulse = { state: "error", lastSettledState: "error", at: Date.now(), ms: 0, error: `${error}` }
       this.pushLog("pulse:error", { error: `${error}` }, "error")
     }
     if (this.stopped) return

@@ -67,6 +67,7 @@ const TURN_OPTIONS = [
   ["--turn-username <value>", "custom TURN username"],
   ["--turn-credential <value>", "custom TURN credential"],
 ] as const
+const OVERWRITE_OPTION = ["--overwrite", "overwrite same-name saved files instead of creating copies"] as const
 const SAVE_DIR_OPTION = ["--save-dir <dir>", "save directory"] as const
 const TUI_TOGGLE_OPTIONS = [
   ["--clean <0|1>", "show only active peers when 1; show terminal peers too when 0"],
@@ -103,6 +104,7 @@ export const sessionConfigFrom = (options: Record<string, unknown>, defaults: { 
     saveDir: resolve(`${options.saveDir ?? process.env.SEND_SAVE_DIR ?? "."}`),
     autoAcceptIncoming: accept ?? defaults.autoAcceptIncoming ?? false,
     autoSaveIncoming: save ?? defaults.autoSaveIncoming ?? false,
+    overwriteIncoming: !!options.overwrite,
     turnUrls: splitList(options.turnUrl ?? process.env.SEND_TURN_URL),
     turnUsername: `${options.turnUsername ?? process.env.SEND_TURN_USERNAME ?? ""}`.trim() || undefined,
     turnCredential: `${options.turnCredential ?? process.env.SEND_TURN_CREDENTIAL ?? ""}`.trim() || undefined,
@@ -302,6 +304,7 @@ export const createCli = (handlers: CliHandlers = defaultCliHandlers) => {
   addOptions(cli.command("accept", "receive and save files"), [
     ...ROOM_SELF_OPTIONS,
     SAVE_DIR_OPTION,
+    OVERWRITE_OPTION,
     ["--once", "exit after the first saved incoming transfer"],
     ["--json", "emit ndjson events"],
     ...TURN_OPTIONS,
@@ -312,6 +315,7 @@ export const createCli = (handlers: CliHandlers = defaultCliHandlers) => {
     ...TUI_TOGGLE_OPTIONS,
     ["--events", "show the event log pane"],
     SAVE_DIR_OPTION,
+    OVERWRITE_OPTION,
     ...TURN_OPTIONS,
   ]).action(handlers.tui)
 

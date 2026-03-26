@@ -5,7 +5,7 @@ import type { PeerSnapshot, TransferSnapshot } from "../src/core/session"
 import { fallbackName } from "../src/core/protocol"
 
 const { createTestRenderer, rgb, ui } = reziCore
-const { aboutCliCommand, aboutWebLabel, aboutWebUrl, buildOsc52ClipboardSequence, canAcceptFilePreviewWithRight, canNavigateDraftHistory, clampFilePreviewSelectedIndex, consumeSatisfiedFocusRequest, createInitialTuiState, createNoopTuiActions, createQuitController, deriveBootFocusState, ensureFilePreviewScrollTop, externalOpenCommand, filePreviewVisible, groupTransfersByPeer, inviteCliText, inviteCopyUrl, inviteWebLabel, isDraftHistoryEntryPoint, isEditableFocusId, moveDraftHistory, moveFilePreviewSelection, previewPathSegments, previewSegmentStyle, pushDraftHistoryEntry, renderTuiView, renderedReadySelectedPeers, resolveWebUrlBase, resumeCliCommand, resumeOutputLines, resumeWebUrl, scheduleBootNameJump, shouldSwallowQQuit, transferSummaryStats, visiblePanes, webInviteUrl, withAcceptedDraftInput } = tuiRuntime
+const { aboutCliCommand, aboutWebLabel, aboutWebUrl, buildOsc52ClipboardSequence, canAcceptFilePreviewWithRight, canNavigateDraftHistory, clampFilePreviewSelectedIndex, consumeSatisfiedFocusRequest, createInitialTuiState, createNoopTuiActions, createQuitController, deriveBootFocusState, ensureFilePreviewScrollTop, externalOpenCommand, filePreviewVisible, groupTransfersByPeer, inviteCliText, inviteCopyUrl, inviteWebLabel, isDraftHistoryEntryPoint, isEditableFocusId, moveDraftHistory, moveFilePreviewSelection, previewPathSegments, previewSegmentStyle, pushDraftHistoryEntry, renderTuiView, renderedReadySelectedPeers, resolveWebUrlBase, resumeCliCommand, resumeOutputLines, resumeWebUrl, scheduleBootNameJump, shouldSwallowQQuit, statusToneVariant, transferSummaryStats, visiblePanes, webInviteUrl, withAcceptedDraftInput } = tuiRuntime
 
 const createWideRenderer = () => createTestRenderer({ viewport: { cols: 180, rows: 60 } })
 const hasRenderedText = (view: ReturnType<ReturnType<typeof createWideRenderer>["render"]>, value: string) =>
@@ -193,10 +193,13 @@ describe("TUI view", () => {
     const close = view.findById("close-about")
     const elefunc = view.findById("about-elefunc-link")
     const intro = view.findById("about-intro")
-    const summary = view.findById("about-summary")
-    const runtime = view.findById("about-runtime")
-    expect(modal === null || close === null || elefunc === null || intro === null || summary === null || runtime === null).toBe(false)
-    if (!modal || !close || !elefunc || !intro || !summary || !runtime) throw new Error("missing about modal nodes")
+    const bullet1 = view.findById("about-bullet-1")
+    const bullet2 = view.findById("about-bullet-2")
+    const bullet3 = view.findById("about-bullet-3")
+    const bullet4 = view.findById("about-bullet-4")
+    const bullet5 = view.findById("about-bullet-5")
+    expect(modal === null || close === null || elefunc === null || intro === null || bullet1 === null || bullet2 === null || bullet3 === null || bullet4 === null || bullet5 === null).toBe(false)
+    if (!modal || !close || !elefunc || !intro || !bullet1 || !bullet2 || !bullet3 || !bullet4 || !bullet5) throw new Error("missing about modal nodes")
     expect(modal.kind).toBe("modal")
     expect(modal.props.title).toBe("About Send")
     expect(modal.props.frameStyle).toEqual({ background: rgb(0, 0, 0) })
@@ -204,12 +207,20 @@ describe("TUI view", () => {
     expect(modal.props.initialFocus).toBe("close-about")
     expect(modal.props.returnFocusTo).toBe("open-about")
     expect(intro.props.wrap).toBe(true)
-    expect(summary.props.wrap).toBe(true)
-    expect(runtime.props.wrap).toBe(true)
+    expect(bullet1.props.wrap).toBe(true)
+    expect(bullet2.props.wrap).toBe(true)
+    expect(bullet3.props.wrap).toBe(true)
+    expect(bullet4.props.wrap).toBe(true)
+    expect(bullet5.props.wrap).toBe(true)
     expect(hasRenderedText(view, "Peer-to-peer file transfer")).toBe(false)
     expect(hasRenderedText(view, "Peer-to-Peer Transfers – Web & CLI")).toBe(true)
-    expect(hasRenderedText(view, "Join the same room, see who is there, and offer files directly to selected peers.")).toBe(true)
-    expect(hasRenderedText(view, "Send uses lightweight signaling to discover peers and negotiate WebRTC. Files move over WebRTC data channels, using direct paths when possible and TURN relay when needed.")).toBe(true)
+    expect(hasRenderedText(view, "• Join a room, see who is there, and filter or select exactly which peers to target before offering files.")).toBe(true)
+    expect(hasRenderedText(view, "• File data does not travel through the signaling service; Send uses lightweight signaling to discover peers and negotiate WebRTC, then transfers directly peer-to-peer when possible, with TURN relay when needed.")).toBe(true)
+    expect(hasRenderedText(view, "• Incoming transfers can be auto-accepted and auto-saved, and same-name files can either stay as numbered copies or overwrite the original when that mode is enabled.")).toBe(true)
+    expect(hasRenderedText(view, "• The CLI streams incoming saves straight to disk in the current save directory, with overwrite available through the CLI flag.")).toBe(true)
+    expect(hasRenderedText(view, "• Other features include copyable web and CLI invites, rendered-peer filtering and selection, TURN sharing, and live connection insight like signaling state, RTT, data state, and path labels.")).toBe(true)
+    expect(hasRenderedText(view, "Join the same room, see who is there, and offer files directly to selected peers.")).toBe(false)
+    expect(hasRenderedText(view, "Send uses lightweight signaling to discover peers and negotiate WebRTC. Files move over WebRTC data channels, using direct paths when possible and TURN relay when needed.")).toBe(false)
     expect(hasRenderedText(view, "--self alice-12345678")).toBe(false)
     expect(hasRenderedText(view, "Elefunc, Inc.")).toBe(false)
     expect(hasRenderedText(view, "What it is")).toBe(false)
@@ -327,7 +338,7 @@ describe("TUI view", () => {
       localId: "abc123",
       socketState: "open",
       turnState: "used",
-      pulse: { state: "open", at: 1, ms: 12, error: "" },
+      pulse: { state: "open", lastSettledState: "open", at: Date.now(), ms: 12, error: "" },
       profile: {
         geo: { city: "Seoul", region: "Seoul", country: "KR" },
         network: { asOrganization: "Edge ISP", colo: "ICN", ip: "203.0.113.5" },
@@ -338,7 +349,7 @@ describe("TUI view", () => {
     }
     const view = renderer.render(renderTuiView(state, createNoopTuiActions()))
     expect(view.findText("Signaling") === null).toBe(false)
-    expect(view.findText("Pulse") === null).toBe(false)
+    expect(view.findText("Pulse")).toBe(null)
     expect(view.findText("TURN") === null).toBe(false)
     expect(view.findText("-abc123") === null).toBe(false)
     expect(view.findText("Seoul, Seoul, KR") === null).toBe(false)
@@ -356,11 +367,10 @@ describe("TUI view", () => {
     expect(view.toText().includes("( used )")).toBe(false)
     expect(view.findText(`save ${state.snapshot.saveDir}`)).toBe(null)
     const signaling = view.findText("Signaling")
-    const pulse = view.findText("Pulse")
     const turn = view.findText("TURN")
-    expect(signaling === null || pulse === null || turn === null).toBe(false)
-    if (!signaling || !pulse || !turn) throw new Error("missing self metric labels")
-    for (const metric of [signaling, pulse, turn]) {
+    expect(signaling === null || turn === null).toBe(false)
+    if (!signaling || !turn) throw new Error("missing self metric labels")
+    for (const metric of [signaling, turn]) {
       const box = nearestAncestorBox(view, metric)
       expect(box === null).toBe(false)
       if (!box) throw new Error("missing self metric box")
@@ -370,6 +380,10 @@ describe("TUI view", () => {
       if (!borderStyle || typeof borderStyle !== "object") throw new Error("missing self metric border style")
       expect("fg" in borderStyle ? borderStyle.fg : null).toBe(rgb(20, 25, 32))
     }
+  })
+
+  test("maps degraded signaling to a warning badge tone", () => {
+    expect(statusToneVariant("degraded")).toBe("warning")
   })
 
   test("renders the web-app-style self shell with the 🙂 prefix control", () => {
@@ -429,6 +443,20 @@ describe("TUI view", () => {
     ])
   })
 
+  test("includes overwrite state in invite previews when enabled", () => {
+    const renderer = createWideRenderer()
+    const state = createInitialTuiState({ room: "demo", reconnectSocket: false, overwriteIncoming: true }, false)
+    state.inviteDropdownOpen = true
+    const view = renderer.render(renderTuiView(state, createNoopTuiActions()))
+    const inviteDropdown = view.findById("room-invite-dropdown")
+    expect(inviteDropdown === null).toBe(false)
+    if (!inviteDropdown) throw new Error("missing room invite dropdown")
+    expect(inviteDropdown.props.items).toEqual([
+      { id: "cli", label: "CLI", shortcut: "bunx rtme.sh --room demo --overwrite" },
+      { id: "web", label: "WEB", shortcut: "rtme.sh/#room=demo&overwrite=1" },
+    ])
+  })
+
   test("uses SEND_WEB_URL for the room invite link base and falls back on invalid values", async () => {
     await withEnv({ SEND_WEB_URL: "https://example.com/send/" }, () => {
       const state = createInitialTuiState({ room: "demo", reconnectSocket: false }, false)
@@ -452,6 +480,12 @@ describe("TUI view", () => {
       expect(inviteWebLabel(state)).toBe("example.com/send/#room=demo")
       expect(inviteCliText(state)).toBe("bunx example.com --room demo")
     })
+  })
+
+  test("includes overwrite in scheme-less WEB labels and CLI invite text when enabled", () => {
+    const state = createInitialTuiState({ room: "demo", reconnectSocket: false, overwriteIncoming: true }, false)
+    expect(inviteWebLabel(state)).toBe("rtme.sh/#room=demo&overwrite=1")
+    expect(inviteCliText(state)).toBe("bunx rtme.sh --room demo --overwrite")
   })
 
   test("builds copy service URLs and OSC 52 clipboard sequences for invite payloads", () => {
@@ -527,6 +561,13 @@ describe("TUI view", () => {
       "bunx rtme.sh --room demo --self alice-12345678 --clean 0 --accept 0 --offer 0 --save 0 --events --save-dir '/tmp/send files' --turn-url turn:turn.example.com:3478 --turn-username user --turn-credential pass",
       "",
     ])
+  })
+
+  test("includes overwrite in TUI exit revival web and CLI outputs when enabled", () => {
+    const state = createInitialTuiState({ room: "demo", name: "alice", localId: "12345678", reconnectSocket: false, overwriteIncoming: true }, false)
+
+    expect(resumeWebUrl(state)).toBe("https://rtme.sh/#room=demo&overwrite=1")
+    expect(resumeCliCommand(state)).toBe("bunx rtme.sh --room demo --self alice-12345678 --overwrite")
   })
 
   test("does not include peer-shared TURN in the TUI exit revival CLI output", () => {
@@ -1067,15 +1108,24 @@ describe("TUI view", () => {
     expect((shareButton.props as any).focusConfig?.indicator).toBe("none")
     expect((shareButton.props as any).focusConfig?.showHint).toBe(false)
     expect((shareButton.props as any).focusConfig?.contentStyle).toBe(undefined)
-    const rtt = view.findText("RTT")
-    const data = view.findText("Data")
+    const peerRow = view.findById("peer-row-p1")
+    expect(peerRow === null).toBe(false)
+    if (!peerRow) throw new Error("missing peer row")
+    const peerRowText = (value: string) => view.nodes.find(node =>
+      node.kind === "text"
+      && node.text === value
+      && node.path.length > peerRow.path.length
+      && peerRow.path.every((part, index) => node.path[index] === part))
+    const rtt = peerRowText("RTT")
+    const data = peerRowText("Data")
+    const turn = peerRowText("TURN")
     const turnValue = view.findText("used")
-    const path = view.findText("Path")
+    const path = peerRowText("Path")
     const pathValue = view.findText("Direct ↔ TURN")
     const connected = view.nodes.find(node => node.kind === "status" && "label" in node.props && node.props.label === "connected")
     const defaults = view.findText("As")
-    expect(rtt === null || data === null || turnValue === null || path === null || pathValue === null).toBe(false)
-    if (!rtt || !data || !turnValue || !path || !pathValue) throw new Error("missing peer metric nodes")
+    expect(rtt === null || data === null || turn === null || turnValue === null || path === null || pathValue === null).toBe(false)
+    if (!rtt || !data || !turn || !turnValue || !path || !pathValue) throw new Error("missing peer metric nodes")
     expect(connected === undefined || defaults === null).toBe(false)
     if (!connected || !defaults) throw new Error("missing peer status nodes")
     expect(hasRenderedText(view, "12ms")).toBe(true)
@@ -1083,9 +1133,10 @@ describe("TUI view", () => {
     expect(hasRenderedText(view, "used")).toBe(true)
     expect(hasRenderedText(view, "As")).toBe(true)
     expect(connected.props.status).toBe("online")
-    expect(data.rect.y).toBe(rtt.rect.y)
-    expect(pathValue.rect.y).toBe(turnValue.rect.y)
-    expect(path.rect.y > rtt.rect.y).toBe(true)
+    expect(turn.rect.y).toBe(rtt.rect.y)
+    expect(data.rect.y > rtt.rect.y).toBe(true)
+    expect(path.rect.y).toBe(data.rect.y)
+    expect(pathValue.rect.y > rtt.rect.y).toBe(true)
     expect(defaults.rect.x).toBe(connected.rect.x + connected.rect.w + 1)
     expect(hasRenderedText(view, "(connected)")).toBe(false)
     expect(hasRenderedText(view, "(open)")).toBe(false)
@@ -1101,9 +1152,6 @@ describe("TUI view", () => {
     if (!peerIp) throw new Error("missing peer IP link")
     expect(peerIp.props.url).toBe("https://gi.rt.ht/:203.0.113.5")
     expect(view.findText("Selected")).toBe(null)
-    const turn = view.findText("TURN")
-    expect(turn === null).toBe(false)
-    if (!turn) throw new Error("missing TURN metric label")
     for (const metric of [rtt, data, turn, path]) {
       const box = nearestAncestorBox(view, metric)
       expect(box === null).toBe(false)
@@ -1617,6 +1665,35 @@ describe("TUI view", () => {
     expect(outgoingStatus.rect.y).toBe(outgoingName.rect.y)
     expect(incomingStatus.rect.y).toBe(incomingName.rect.y)
     expect(incomingErrorTag.rect.y).toBe(incomingName.rect.y)
+  })
+
+  test("renders transfer facts inside the same dim-bordered boxes as peer metrics", () => {
+    const renderer = createWideRenderer()
+    const state = createInitialTuiState({ room: "demo", reconnectSocket: false }, false)
+    state.snapshot = {
+      ...state.snapshot,
+      peers: [
+        { id: "p1", name: "alice", displayName: "alice-p1", presence: "active", selected: true, selectable: true, ready: true, status: "connected", turn: "custom-turn", turnState: "used", dataState: "open", lastError: "", rttMs: 12, localCandidateType: "host", remoteCandidateType: "relay", pathLabel: "Direct ↔ TURN" },
+      ],
+      transfers: [
+        { id: "t1", peerId: "p1", peerName: "alice", direction: "out", status: "complete", name: "one.txt", size: 1024, bytes: 1024, progress: 100, speedText: "1 KB/s", etaText: "—", error: "", createdAt: 1, updatedAt: 2, startedAt: 2, endedAt: 3, savedAt: 0 },
+      ],
+    }
+    const view = renderer.render(renderTuiView(state, createNoopTuiActions()))
+    const size = view.findText("Size")
+    const speed = view.findText("Speed")
+    expect(size === null || speed === null).toBe(false)
+    if (!size || !speed) throw new Error("missing transfer fact labels")
+    for (const metric of [size, speed]) {
+      const box = nearestAncestorBox(view, metric)
+      expect(box === null).toBe(false)
+      if (!box) throw new Error("missing transfer fact box")
+      expect("border" in box.props ? box.props.border : undefined).toBe("single")
+      const borderStyle = "borderStyle" in box.props ? box.props.borderStyle : null
+      expect(borderStyle === null || typeof borderStyle !== "object").toBe(false)
+      if (!borderStyle || typeof borderStyle !== "object") throw new Error("missing transfer fact border style")
+      expect("fg" in borderStyle ? borderStyle.fg : null).toBe(rgb(20, 25, 32))
+    }
   })
 
   test("maps waiting transfer statuses to busy ui.status badges in the title row", () => {

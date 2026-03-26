@@ -116,6 +116,11 @@ describe("CLI surface", () => {
     expect(config.autoSaveIncoming).toBe(true)
   })
 
+  test("session config enables overwrite mode from --overwrite", () => {
+    const config = sessionConfigFrom({ overwrite: true }, {})
+    expect(config.overwriteIncoming).toBe(true)
+  })
+
   test("session config defaults saveDir to the current working directory", () => {
     const config = sessionConfigFrom({}, {})
     expect(config.saveDir).toBe(resolve(process.cwd()))
@@ -223,6 +228,7 @@ describe("CLI surface", () => {
   test("accept help is available", async () => {
     const output = await captureConsole(() => runCli(["bun", "send", "accept", "--help"]))
     expect(output).toContain("Usage:\n  $ send accept")
+    expect(output).toContain("--overwrite")
   })
 
   test("defaults bare send to the tui command", async () => {
@@ -233,13 +239,14 @@ describe("CLI surface", () => {
 
   test("defaults no-subcommand option-only invocations to tui", async () => {
     const { calls, handlers } = createHandlerSpies()
-    await runCli(["bun", "send", "--room", "demo", "--events", "--to", "peer", "--bogus"], handlers)
+    await runCli(["bun", "send", "--room", "demo", "--events", "--overwrite", "--to", "peer", "--bogus"], handlers)
     expect(calls.length).toBe(1)
     expect(calls[0]?.name).toBe("tui")
     expect(calls[0]?.args[0]).toEqual({
       "--": [],
       room: "demo",
       events: true,
+      overwrite: true,
       to: "peer",
       bogus: true,
     })
@@ -295,6 +302,7 @@ describe("CLI surface", () => {
     expect(output).toContain("--accept <0|1>")
     expect(output).toContain("--offer <0|1>")
     expect(output).toContain("--save <0|1>")
+    expect(output).toContain("--overwrite")
     expect(output).toContain("name, name-ID, or -ID")
     expect(output).toContain("use --self=-ID")
     expect(output.includes("--name <name>")).toBe(false)

@@ -1,4 +1,4 @@
-import { access, mkdir, open, rm, stat, type FileHandle } from "node:fs/promises"
+import { access, mkdir, open, rename, rm, stat, type FileHandle } from "node:fs/promises"
 import { basename, extname, join, resolve } from "node:path"
 import { resolveUserPath } from "./paths"
 
@@ -101,8 +101,23 @@ export const uniqueOutputPath = async (directory: string, fileName: string, rese
   }
 }
 
-export const saveIncomingFile = async (directory: string, fileName: string, data: Buffer) => {
-  const path = await uniqueOutputPath(directory, fileName)
+export const incomingOutputPath = async (directory: string, fileName: string, overwrite = false, reservedPaths: ReadonlySet<string> = new Set()) => {
+  await mkdir(directory, { recursive: true })
+  return overwrite ? join(directory, fileName) : uniqueOutputPath(directory, fileName, reservedPaths)
+}
+
+export const replaceOutputPath = async (sourcePath: string, destinationPath: string) => {
+  try {
+    await rename(sourcePath, destinationPath)
+  } catch (error) {
+    if (!await pathExists(destinationPath)) throw error
+    await removePath(destinationPath)
+    await rename(sourcePath, destinationPath)
+  }
+}
+
+export const saveIncomingFile = async (directory: string, fileName: string, data: Buffer, overwrite = false) => {
+  const path = await incomingOutputPath(directory, fileName, overwrite)
   await Bun.write(path, data)
   return path
 }

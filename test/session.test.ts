@@ -3,7 +3,7 @@ import { access, mkdir, readFile, rm } from "node:fs/promises"
 import { join } from "node:path"
 import { sessionRuntime } from "./runtime"
 
-const { SendSession, SessionAbortedError, connectivitySnapshotFromPeerConnection, probeIcePairConsentRtt, localProfileFromResponse } = sessionRuntime
+const { SendSession, SessionAbortedError, PULSE_PROBE_INTERVAL_MS, PULSE_STALE_MS, connectivitySnapshotFromPeerConnection, localProfileFromResponse, probeIcePairConsentRtt, signalMetricState } = sessionRuntime
 const exists = async (path: string) => access(path).then(() => true, () => false)
 
 const incomingTransfer = (overrides: Record<string, unknown> = {}) => ({
@@ -542,6 +542,21 @@ describe("SendSession mutators", () => {
     await rm(dir, { recursive: true, force: true })
   })
 
+  test("overwrites an existing completed incoming file when overwrite mode is enabled", async () => {
+    const dir = join(process.cwd(), ".tmp-send-session-overwrite-complete")
+    await rm(dir, { recursive: true, force: true })
+    await mkdir(dir, { recursive: true })
+    await Bun.write(join(dir, "hello.txt"), "old")
+    const session = new SendSession({ room: "demo", saveDir: dir, reconnectSocket: false, overwriteIncoming: true }) as any
+    session.transfers.set("t1", incomingTransfer({ status: "complete", data: Buffer.from("hello") }))
+
+    const savedPath = await session.saveTransfer("t1")
+
+    expect(savedPath).toBe(join(dir, "hello.txt"))
+    expect(await readFile(savedPath, "utf8")).toBe("hello")
+    await rm(dir, { recursive: true, force: true })
+  })
+
   test("streams auto-saved incoming transfers straight to disk from receive start", async () => {
     const dir = join(process.cwd(), ".tmp-send-session-stream")
     await rm(dir, { recursive: true, force: true })
@@ -572,6 +587,53 @@ describe("SendSession mutators", () => {
     expect(await readFile(transfer.savedPath, "utf8")).toBe("hello")
     expect(events.some(event => event.type === "saved" && event.transfer.id === "t1" && event.transfer.savedPath === transfer.savedPath)).toBe(true)
 
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  test("overwrites the same streamed target path when overwrite mode is enabled", async () => {
+    const dir = join(process.cwd(), ".tmp-send-session-stream-overwrite")
+    await rm(dir, { recursive: true, force: true })
+    await mkdir(dir, { recursive: true })
+    await Bun.write(join(dir, "hello.txt"), "old")
+    const session = new SendSession({ room: "demo", saveDir: dir, reconnectSocket: false, autoAcceptIncoming: true, autoSaveIncoming: true, overwriteIncoming: true }) as any
+    const peer = readyPeer()
+    session.peers.set("p1", peer)
+
+    await session.handleTransferControl(peer, { kind: "file-offer", transferId: "t1", name: "hello.txt", size: 5, type: "text/plain", lastModified: 0, chunkSize: 5, totalChunks: 1, to: session.localId })
+    await session.handleTransferControl(peer, { kind: "file-start", transferId: "t1", to: session.localId })
+    const transfer = session.transfers.get("t1")
+
+    session.onBinary(peer, Buffer.from("hello"))
+    await session.handleTransferControl(peer, { kind: "file-end", transferId: "t1", size: 5, totalChunks: 1, to: session.localId })
+
+    expect(transfer.savedPath).toBe(join(dir, "hello.txt"))
+    expect(await readFile(join(dir, "hello.txt"), "utf8")).toBe("hello")
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  test("lets the last streamed overwrite finisher win for concurrent same-name transfers", async () => {
+    const dir = join(process.cwd(), ".tmp-send-session-stream-overwrite-concurrent")
+    await rm(dir, { recursive: true, force: true })
+    await mkdir(dir, { recursive: true })
+    const session = new SendSession({ room: "demo", saveDir: dir, reconnectSocket: false, autoAcceptIncoming: true, autoSaveIncoming: true, overwriteIncoming: true }) as any
+    const peer1 = { ...readyPeer(), id: "p1" }
+    const peer2 = { ...readyPeer(), id: "p2" }
+    session.peers.set("p1", peer1)
+    session.peers.set("p2", peer2)
+
+    await session.handleTransferControl(peer1, { kind: "file-offer", transferId: "t1", name: "hello.txt", size: 5, type: "text/plain", lastModified: 0, chunkSize: 5, totalChunks: 1, to: session.localId })
+    await session.handleTransferControl(peer2, { kind: "file-offer", transferId: "t2", name: "hello.txt", size: 5, type: "text/plain", lastModified: 0, chunkSize: 5, totalChunks: 1, to: session.localId })
+    await session.handleTransferControl(peer1, { kind: "file-start", transferId: "t1", to: session.localId })
+    await session.handleTransferControl(peer2, { kind: "file-start", transferId: "t2", to: session.localId })
+
+    session.onBinary(peer1, Buffer.from("first"))
+    session.onBinary(peer2, Buffer.from("later"))
+    await session.handleTransferControl(peer1, { kind: "file-end", transferId: "t1", size: 5, totalChunks: 1, to: session.localId })
+    await session.handleTransferControl(peer2, { kind: "file-end", transferId: "t2", size: 5, totalChunks: 1, to: session.localId })
+
+    expect(session.transfers.get("t1").savedPath).toBe(join(dir, "hello.txt"))
+    expect(session.transfers.get("t2").savedPath).toBe(join(dir, "hello.txt"))
+    expect(await readFile(join(dir, "hello.txt"), "utf8")).toBe("later")
     await rm(dir, { recursive: true, force: true })
   })
 
@@ -618,6 +680,25 @@ describe("SendSession mutators", () => {
     expect(tempPath ? await exists(tempPath) : false).toBe(false)
     expect(transfer.savedPath).toBe(undefined)
 
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  test("does not remove an existing destination when an overwrite-mode streamed transfer fails", async () => {
+    const dir = join(process.cwd(), ".tmp-send-session-stream-overwrite-fail")
+    await rm(dir, { recursive: true, force: true })
+    await mkdir(dir, { recursive: true })
+    await Bun.write(join(dir, "hello.txt"), "old")
+    const session = new SendSession({ room: "demo", saveDir: dir, reconnectSocket: false, autoAcceptIncoming: true, autoSaveIncoming: true, overwriteIncoming: true }) as any
+    const peer = readyPeer()
+    session.peers.set("p1", peer)
+
+    await session.handleTransferControl(peer, { kind: "file-offer", transferId: "t1", name: "hello.txt", size: 5, type: "text/plain", lastModified: 0, chunkSize: 5, totalChunks: 1, to: session.localId })
+    await session.handleTransferControl(peer, { kind: "file-start", transferId: "t1", to: session.localId })
+    session.onBinary(peer, Buffer.from("hel"))
+    await session.handleTransferControl(peer, { kind: "file-error", transferId: "t1", reason: "failed", to: session.localId })
+    await Bun.sleep(50)
+
+    expect(await readFile(join(dir, "hello.txt"), "utf8")).toBe("old")
     await rm(dir, { recursive: true, force: true })
   })
 
@@ -905,14 +986,88 @@ describe("SendSession mutators", () => {
       globalThis.fetch = (async () => new Response("ok")) as typeof fetch
       await session.probePulse()
       expect(session.snapshot().pulse.state).toBe("open")
+      expect(session.snapshot().pulse.lastSettledState).toBe("open")
       expect(session.snapshot().pulse.ms >= 0).toBe(true)
 
       globalThis.fetch = (async () => { throw new Error("pulse down") }) as typeof fetch
       await session.probePulse()
       expect(session.snapshot().pulse.state).toBe("error")
+      expect(session.snapshot().pulse.lastSettledState).toBe("error")
       expect(session.snapshot().pulse.error).toContain("pulse down")
     } finally {
       globalThis.fetch = originalFetch
+    }
+  })
+
+  test("derives a combined signaling metric from socket and pulse state", () => {
+    const now = Date.now()
+    const idlePulse = { state: "idle", lastSettledState: "idle", at: 0, ms: 0, error: "" } as const
+    const freshPulse = { state: "open", lastSettledState: "open", at: now, ms: 8, error: "" } as const
+
+    expect(signalMetricState("idle", idlePulse, now)).toBe("idle")
+    expect(signalMetricState("connecting", idlePulse, now)).toBe("connecting")
+    expect(signalMetricState("open", { ...idlePulse, state: "checking" }, now)).toBe("checking")
+    expect(signalMetricState("open", freshPulse, now)).toBe("open")
+    expect(signalMetricState("open", { state: "error", lastSettledState: "error", at: now, ms: 0, error: "pulse down" }, now)).toBe("degraded")
+    expect(signalMetricState("open", { ...freshPulse, at: now - PULSE_STALE_MS - 1 }, now)).toBe("degraded")
+    expect(signalMetricState("closed", freshPulse, now)).toBe("closed")
+    expect(signalMetricState("error", freshPulse, now)).toBe("error")
+  })
+
+  test("starts and stops pulse polling with the connect lifecycle", async () => {
+    const originalSetInterval = globalThis.setInterval
+    const originalClearInterval = globalThis.clearInterval
+    const originalFetch = globalThis.fetch
+    const OriginalWebSocket = globalThis.WebSocket
+    const intervals: Array<{ fn: TimerHandler; ms: number | undefined; args: unknown[] }> = []
+    const cleared: unknown[] = []
+
+    class ImmediateWebSocket {
+      static CONNECTING = 0
+      static OPEN = 1
+      static CLOSING = 2
+      static CLOSED = 3
+      readyState = ImmediateWebSocket.CONNECTING
+      onopen: ((event?: unknown) => void) | null = null
+      onmessage: ((event?: unknown) => void) | null = null
+      onerror: ((event?: unknown) => void) | null = null
+      onclose: ((event?: unknown) => void) | null = null
+      constructor(readonly url: string) {
+        queueMicrotask(() => {
+          this.readyState = ImmediateWebSocket.OPEN
+          this.onopen?.(new Event("open"))
+        })
+      }
+      send() {}
+      close() {
+        this.readyState = ImmediateWebSocket.CLOSED
+        this.onclose?.(new Event("close"))
+      }
+    }
+
+    globalThis.setInterval = (((fn: TimerHandler, ms?: number, ...args: unknown[]) => {
+      const token = { fn, ms, args }
+      intervals.push(token)
+      return token as unknown as ReturnType<typeof setInterval>
+    })) as unknown as typeof setInterval
+    globalThis.clearInterval = (((id?: ReturnType<typeof setInterval>) => {
+      cleared.push(id)
+    })) as typeof clearInterval
+    globalThis.fetch = (async (input: string | URL | Request) => `${input}`.includes("/pulse?") ? new Response("ok") : Response.json({})) as typeof fetch
+    globalThis.WebSocket = ImmediateWebSocket as unknown as typeof WebSocket
+
+    try {
+      const session = new SendSession({ room: "demo", reconnectSocket: false })
+      await session.connect()
+      const pulseTimer = intervals.find(timer => timer.ms === PULSE_PROBE_INTERVAL_MS)
+      expect(pulseTimer === undefined).toBe(false)
+      await session.close()
+      expect(cleared).toContain(pulseTimer)
+    } finally {
+      globalThis.setInterval = originalSetInterval
+      globalThis.clearInterval = originalClearInterval
+      globalThis.fetch = originalFetch
+      globalThis.WebSocket = OriginalWebSocket
     }
   })
 

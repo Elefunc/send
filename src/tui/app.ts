@@ -2,7 +2,7 @@ import { resolve } from "node:path"
 import { BACKEND_RAW_WRITE_MARKER, rgb, ui, type BackendRawWrite, type BadgeVariant, type TextStyle, type UiEvent, type VNode } from "@rezi-ui/core"
 import { createNodeApp } from "@rezi-ui/node"
 import { inspectLocalFile } from "../core/files"
-import { isSessionAbortedError, SendSession, type PeerSnapshot, type SessionConfig, type SessionSnapshot, type TransferSnapshot } from "../core/session"
+import { isSessionAbortedError, SendSession, signalMetricState, type PeerSnapshot, type SessionConfig, type SessionSnapshot, type TransferSnapshot } from "../core/session"
 import { cleanLocalId, cleanName, cleanRoom, displayPeerName, fallbackName, formatBytes, type LogEntry, peerDefaultsToken, type PeerProfile, uid } from "../core/protocol"
 import { FILE_SEARCH_VISIBLE_ROWS, type FileSearchEvent, type FileSearchMatch, type FileSearchRequest } from "./file-search-protocol"
 import { deriveFileSearchScope, formatFileSearchDisplayPath, normalizeSearchQuery, offsetFileSearchMatchIndices } from "./file-search"
@@ -72,6 +72,7 @@ export interface TuiState {
   autoOfferOutgoing: boolean
   autoAcceptIncoming: boolean
   autoSaveIncoming: boolean
+  overwriteIncoming: boolean
   hideTerminalPeers: boolean
   eventsExpanded: boolean
   offeringDrafts: boolean
@@ -133,8 +134,13 @@ const DEFAULT_SAVE_DIR = resolve(process.cwd())
 const ABOUT_ELEFUNC_URL = "https://rtme.sh/send"
 const ABOUT_TITLE = "About Send"
 const ABOUT_INTRO = "Peer-to-Peer Transfers – Web & CLI"
-const ABOUT_SUMMARY = "Join the same room, see who is there, and offer files directly to selected peers."
-const ABOUT_RUNTIME = "Send uses lightweight signaling to discover peers and negotiate WebRTC. Files move over WebRTC data channels, using direct paths when possible and TURN relay when needed."
+const ABOUT_BULLETS = [
+  "• Join a room, see who is there, and filter or select exactly which peers to target before offering files.",
+  "• File data does not travel through the signaling service; Send uses lightweight signaling to discover peers and negotiate WebRTC, then transfers directly peer-to-peer when possible, with TURN relay when needed.",
+  "• Incoming transfers can be auto-accepted and auto-saved, and same-name files can either stay as numbered copies or overwrite the original when that mode is enabled.",
+  "• The CLI streams incoming saves straight to disk in the current save directory, with overwrite available through the CLI flag.",
+  "• Other features include copyable web and CLI invites, rendered-peer filtering and selection, TURN sharing, and live connection insight like signaling state, RTT, data state, and path labels.",
+] as const
 const COPY_SERVICE_URL = "https://copy.rt.ht/"
 const TRANSFER_DIRECTION_ARROW = {
   out: { glyph: "↗", style: { fg: rgb(170, 217, 76), bold: true } },
@@ -169,7 +175,7 @@ type BunSpawn = (cmd: string[], options: {
   stderr?: "pipe" | "inherit" | "ignore"
 }) => { unref?: () => void }
 type BunLike = { spawn?: BunSpawn }
-type ShareUrlState = Pick<TuiState, "snapshot" | "hideTerminalPeers" | "autoAcceptIncoming" | "autoOfferOutgoing" | "autoSaveIncoming">
+type ShareUrlState = Pick<TuiState, "snapshot" | "hideTerminalPeers" | "autoAcceptIncoming" | "autoOfferOutgoing" | "autoSaveIncoming" | "overwriteIncoming">
 type ShareCliState = ShareUrlState & Pick<TuiState, "sessionSeed" | "eventsExpanded">
 const shellQuote = (value: string) => safeShellArgPattern.test(value) ? value : `'${value.replaceAll("'", `'\"'\"'`)}'`
 const appendCliFlag = (args: string[], flag: string, value?: string | null) => {
@@ -185,10 +191,12 @@ const SHARE_TOGGLE_FLAGS = [
 ] as const satisfies readonly (readonly [string, keyof ShareUrlState, string])[]
 const appendToggleCliFlags = (args: string[], state: ShareUrlState) => {
   for (const [, stateKey, flag] of SHARE_TOGGLE_FLAGS) if (!state[stateKey]) appendCliFlag(args, flag, "0")
+  if (state.overwriteIncoming) args.push("--overwrite")
 }
 const buildHashParams = (state: ShareUrlState, omitDefaults = false) => {
   const params = new URLSearchParams({ room: cleanRoom(state.snapshot.room) })
   for (const [key, stateKey] of SHARE_TOGGLE_FLAGS) if (!omitDefaults || !state[stateKey]) params.set(key, hashBool(state[stateKey]))
+  if (!omitDefaults || state.overwriteIncoming) params.set("overwrite", hashBool(state.overwriteIncoming))
   return params
 }
 const shareTurnCliArgs = (sessionSeed: SessionSeed) => {
@@ -393,7 +401,7 @@ const statusVariant = (status: TransferSnapshot["status"]): BadgeVariant => ({
   cancelling: "warning",
   "awaiting-done": "info",
 }[status] || "default") as BadgeVariant
-const statusToneVariant = (value: string): BadgeVariant => ({
+export const statusToneVariant = (value: string): BadgeVariant => ({
   open: "success",
   connected: "success",
   complete: "success",
@@ -411,6 +419,7 @@ const statusToneVariant = (value: string): BadgeVariant => ({
   pending: "warning",
   cancelling: "warning",
   checking: "warning",
+  degraded: "warning",
   disconnected: "warning",
   left: "warning",
   rejected: "warning",
@@ -730,6 +739,7 @@ export const createInitialTuiState = (initialConfig: SessionConfig, showEvents =
   const sessionSeed = normalizeSessionSeed(initialConfig)
   const autoAcceptIncoming = initialConfig.autoAcceptIncoming ?? true
   const autoSaveIncoming = initialConfig.autoSaveIncoming ?? true
+  const overwriteIncoming = !!initialConfig.overwriteIncoming
   const peerSelectionByRoom = new Map<string, Map<string, boolean>>()
   const session = makeSession(sessionSeed, autoAcceptIncoming, autoSaveIncoming, roomPeerSelectionMemory(peerSelectionByRoom, sessionSeed.room))
   const focusState = deriveBootFocusState(sessionSeed.name)
@@ -753,6 +763,7 @@ export const createInitialTuiState = (initialConfig: SessionConfig, showEvents =
     autoOfferOutgoing: launchOptions.offer ?? true,
     autoAcceptIncoming,
     autoSaveIncoming,
+    overwriteIncoming,
     hideTerminalPeers: launchOptions.clean ?? true,
     eventsExpanded: showEvents,
     offeringDrafts: false,
@@ -854,8 +865,7 @@ const renderAboutModal = (_state: TuiState, actions: TuiActions) => {
   title: ABOUT_TITLE,
   content: ui.column({ gap: 1 }, [
     ui.text(ABOUT_INTRO, { id: "about-intro", variant: "heading", wrap: true }),
-    ui.text(ABOUT_SUMMARY, { id: "about-summary", wrap: true }),
-    ui.text(ABOUT_RUNTIME, { id: "about-runtime", wrap: true }),
+    ...ABOUT_BULLETS.map((line, index) => ui.text(line, { id: `about-bullet-${index + 1}`, wrap: true })),
   ]),
   actions: [
     ui.link({
@@ -957,8 +967,7 @@ const renderSelfCard = (state: TuiState, actions: TuiActions) => denseSection({
     ui.text(`-${state.snapshot.localId}`),
   ]),
   ui.row({ gap: 0, wrap: true }, [
-    renderSelfMetric("Signaling", state.snapshot.socketState),
-    renderSelfMetric("Pulse", state.snapshot.pulse.state),
+    renderSelfMetric("Signaling", signalMetricState(state.snapshot.socketState, state.snapshot.pulse)),
     renderSelfMetric("TURN", state.snapshot.turnState),
   ]),
   ui.column({ gap: 0 }, [
@@ -1000,10 +1009,10 @@ const renderPeerRow = (peer: PeerSnapshot, turnShareEnabled: boolean, actions: T
     ]),
     ui.row({ gap: 0 }, [
       renderPeerMetric("RTT", formatPeerRtt(peer.rttMs)),
-      renderPeerMetric("Data", peer.dataState, true),
+      renderPeerMetric("TURN", peer.turnState, true),
     ]),
     ui.row({ gap: 0 }, [
-      renderPeerMetric("TURN", peer.turnState, true),
+      renderPeerMetric("Data", peer.dataState, true),
       renderPeerMetric("Path", peer.pathLabel || "—"),
     ]),
     ui.column({ gap: 0 }, [
@@ -1141,7 +1150,7 @@ const transferActionButtons = (transfer: TransferSnapshot, actions: TuiActions):
   return []
 }
 
-const renderTransferFact = (label: string, value: string) => ui.box({ minWidth: 12 }, [
+const renderTransferFact = (label: string, value: string) => ui.box({ minWidth: 12, border: "single", borderStyle: METRIC_BORDER_STYLE }, [
   ui.column({ gap: 0 }, [
     ui.text(label, { variant: "caption" }),
     ui.text(value),
@@ -1676,6 +1685,7 @@ export const startTui = async (initialConfig: SessionConfig, launchOptions: TuiL
       filePreview: resetFilePreview(),
       drafts: [],
       offeringDrafts: false,
+      overwriteIncoming: !!nextSeed.overwriteIncoming,
       ...(options.reseedBootFocus
         ? deriveBootFocusState(nextSeed.name, current.focusRequestEpoch + 1)
         : {

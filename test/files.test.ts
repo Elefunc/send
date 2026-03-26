@@ -15,6 +15,18 @@ describe("saveIncomingFile", () => {
     expect(second.endsWith("hello (1).txt")).toBe(true)
     await rm(dir, { recursive: true, force: true })
   })
+
+  test("overwrites the same path when overwrite mode is enabled", async () => {
+    const dir = join(process.cwd(), ".tmp-send-cli-overwrite")
+    await rm(dir, { recursive: true, force: true })
+    await mkdir(dir, { recursive: true })
+    const first = await saveIncomingFile(dir, "hello.txt", Buffer.from("one"), true)
+    const second = await saveIncomingFile(dir, "hello.txt", Buffer.from("two"), true)
+    expect(first).toBe(second)
+    expect(second.endsWith("hello.txt")).toBe(true)
+    expect(await Bun.file(second).text()).toBe("two")
+    await rm(dir, { recursive: true, force: true })
+  })
 })
 
 describe("readFileChunk", () => {
