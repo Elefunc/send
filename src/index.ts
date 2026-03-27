@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { resolve } from "node:path"
 import { cac, type CAC } from "cac"
+import { joinOutputLines, type JoinOutputKind } from "./core/invite"
 import { cleanRoom, displayPeerName } from "./core/protocol"
 import type { SendSession, SessionConfig, SessionEvent } from "./core/session"
 import { resolvePeerTargets } from "./core/targeting"
@@ -55,8 +56,8 @@ const parseBinaryOptions = <K extends BinaryOptionKey>(options: Record<string, u
 
 const SELF_ID_LENGTH = 8
 const SELF_ID_PATTERN = new RegExp(`^[a-z0-9]{${SELF_ID_LENGTH}}$`)
-const SELF_HELP_TEXT = "self identity: name, name-ID, or -ID (use --self=-ID)"
-const INVALID_SELF_ID_MESSAGE = `--self ID suffix must be exactly ${SELF_ID_LENGTH} lowercase alphanumeric characters`
+const SELF_HELP_TEXT = "self identity: `name`, `name-id`, or `-id`"
+const INVALID_SELF_ID_MESSAGE = `--self id suffix must be exactly ${SELF_ID_LENGTH} lowercase alphanumeric characters`
 type CliCommand = ReturnType<CAC["command"]>
 const ROOM_SELF_OPTIONS = [
   ["--room <room>", "room id; omit to create a random room"],
@@ -78,6 +79,14 @@ const TUI_TOGGLE_OPTIONS = [
 export const ACCEPT_SESSION_DEFAULTS = { autoAcceptIncoming: true, autoSaveIncoming: true } as const
 const addOptions = (command: CliCommand, definitions: readonly (readonly [string, string])[]) =>
   definitions.reduce((next, [flag, description]) => next.option(flag, description), command)
+const withTrailingHelpLine = <T extends { outputHelp: () => void }>(target: T) => {
+  const outputHelp = target.outputHelp.bind(target)
+  target.outputHelp = () => {
+    outputHelp()
+    console.info("")
+  }
+  return target
+}
 
 const requireSelfId = (value: string) => {
   if (!SELF_ID_PATTERN.test(value)) throw new ExitError(INVALID_SELF_ID_MESSAGE, 1)
@@ -115,6 +124,16 @@ export const roomAnnouncement = (room: string, self: string, json = false) =>
   json ? JSON.stringify({ type: "room", room, self }) : `room ${room}\nself ${self}`
 
 const printRoomAnnouncement = (room: string, self: string, json = false) => console.log(roomAnnouncement(room, self, json))
+
+export const commandAnnouncement = (kind: JoinOutputKind, room: string, self: string, json = false) =>
+  json ? roomAnnouncement(room, self, true) : [roomAnnouncement(room, self), "", ...joinOutputLines(kind, room)].join("\n")
+
+const printCommandAnnouncement = (kind: JoinOutputKind, room: string, self: string, json = false) => console.log(commandAnnouncement(kind, room, self, json))
+export const readyStatusLine = (room: string, json = false) => json ? "" : `ready in ${room}`
+const printReadyStatus = (room: string, json = false) => {
+  const line = readyStatusLine(room, json)
+  if (line) console.log(line)
+}
 
 const printEvent = (event: SessionEvent) => console.log(JSON.stringify(event))
 
@@ -222,9 +241,10 @@ const offerCommand = async (files: string[], options: Record<string, unknown>) =
   const { SendSession } = await loadSessionRuntime()
   const session = new SendSession(sessionConfigFrom(options, {}))
   handleSignals(session)
-  printRoomAnnouncement(session.room, displayPeerName(session.name, session.localId), !!options.json)
+  printCommandAnnouncement("offer", session.room, displayPeerName(session.name, session.localId), !!options.json)
   const detachReporter = attachReporter(session, !!options.json)
   await session.connect()
+  printReadyStatus(session.room, !!options.json)
   const targets = await waitForTargets(session, selectors, timeoutMs)
   const transferIds = await session.queueFiles(files, targets.map(peer => peer.id))
   const results = await waitForFinalTransfers(session, transferIds)
@@ -238,10 +258,10 @@ const acceptCommand = async (options: Record<string, unknown>) => {
   const { SendSession } = await loadSessionRuntime()
   const session = new SendSession(sessionConfigFrom(options, ACCEPT_SESSION_DEFAULTS))
   handleSignals(session)
-  printRoomAnnouncement(session.room, displayPeerName(session.name, session.localId), !!options.json)
+  printCommandAnnouncement("accept", session.room, displayPeerName(session.name, session.localId), !!options.json)
   const detachReporter = attachReporter(session, !!options.json)
   await session.connect()
-  if (!options.json) console.log(`listening in ${session.room}`)
+  printReadyStatus(session.room, !!options.json)
   if (options.once) {
     for (;;) {
       const saved = session.snapshot().transfers.find(transfer => transfer.direction === "in" && transfer.savedAt > 0)
@@ -280,73 +300,96 @@ const defaultCliHandlers: CliHandlers = {
   tui: tuiCommand,
 }
 
+const fileNamePart = (value: string) => value.replace(/^.*[\\/]/, "") || value
+const HELP_NAME_COLOR = "\x1b[38;5;214m"
+const HELP_NAME_RESET = "\x1b[0m"
+const colorCliHelpName = (value: string) => `${HELP_NAME_COLOR}${value}${HELP_NAME_RESET}`
+const cliHelpPlainName = () => process.env.SEND_NAME?.trim() || fileNamePart(Bun.main)
+const cliHelpDisplayName = () => {
+  const name = cliHelpPlainName()
+  if (!process.stdout.isTTY) return name
+  return process.env.SEND_NAME_COLORED?.trim() || colorCliHelpName(name)
+}
+
 export const createCli = (handlers: CliHandlers = defaultCliHandlers) => {
-  const cli = cac("send")
+  const name = cliHelpDisplayName()
+  const cli = cac(name)
   cli.usage("[command] [options]")
 
-  addOptions(cli.command("peers", "list discovered peers"), [
+  withTrailingHelpLine(addOptions(cli.command("peers", "list discovered peers"), [
     ...ROOM_SELF_OPTIONS,
     ["--wait <ms>", "discovery wait in milliseconds"],
     ["--json", "print a json snapshot"],
     SAVE_DIR_OPTION,
     ...TURN_OPTIONS,
-  ]).action(handlers.peers)
+  ])).action(handlers.peers)
 
-  addOptions(cli.command("offer [...files]", "offer files to browser-compatible peers"), [
+  withTrailingHelpLine(addOptions(cli.command("offer [...files]", "offer files to browser-compatible peers"), [
     ...ROOM_SELF_OPTIONS,
-    ["--to <peer>", "target peer id or name-suffix, or `.` for all ready peers; default: `.`"],
+    ["--to <peer>", "target `name`, `name-id`, or `-id`; `.` targets all ready peers by default"],
     ["--wait-peer <ms>", "wait for eligible peers in milliseconds; omit to wait indefinitely"],
     ["--json", "emit ndjson events"],
     SAVE_DIR_OPTION,
     ...TURN_OPTIONS,
-  ]).action(handlers.offer)
+  ])).action(handlers.offer)
 
-  addOptions(cli.command("accept", "receive and save files"), [
+  withTrailingHelpLine(addOptions(cli.command("accept", "receive and save files"), [
     ...ROOM_SELF_OPTIONS,
     SAVE_DIR_OPTION,
     OVERWRITE_OPTION,
     ["--once", "exit after the first saved incoming transfer"],
     ["--json", "emit ndjson events"],
     ...TURN_OPTIONS,
-  ]).action(handlers.accept)
+  ])).action(handlers.accept)
 
-  addOptions(cli.command("tui", "launch the interactive terminal UI"), [
+  withTrailingHelpLine(addOptions(cli.command("tui", "launch the interactive terminal UI"), [
     ...ROOM_SELF_OPTIONS,
     ...TUI_TOGGLE_OPTIONS,
     ["--events", "show the event log pane"],
     SAVE_DIR_OPTION,
     OVERWRITE_OPTION,
     ...TURN_OPTIONS,
-  ]).action(handlers.tui)
+  ])).action(handlers.tui)
 
   cli.help(sections => {
     const usage = sections.find(section => section.title === "Usage:")
-    if (usage) usage.body = "  $ send [command] [options]"
+    if (usage) usage.body = `  $ ${name} [command] [options]`
     const moreInfoIndex = sections.findIndex(section => section.title?.startsWith("For more info"))
     const defaultSection = {
       title: "Default",
-      body: "  send with no command launches the terminal UI (same as `send tui`).",
+      body: `  ${name} with no command launches the terminal UI (same as \`${name} tui\`).`,
     }
     if (moreInfoIndex < 0) sections.push(defaultSection)
     else sections.splice(moreInfoIndex, 0, defaultSection)
   })
+  withTrailingHelpLine(cli.globalCommand)
 
   return cli
 }
 
-const explicitCommand = (cli: CAC, argv: string[]) => {
-  const command = argv[2]
-  if (!command || command.startsWith("-")) return undefined
-  if (cli.commands.some(entry => entry.isMatched(command))) return command
-  throw new ExitError(`Unknown command \`${command}\``, 1)
+const argvPrefix = (argv: string[]) => [argv[0] ?? process.argv[0] ?? "bun", argv[1] ?? process.argv[1] ?? cliHelpPlainName()]
+const printSubcommandHelp = (argv: string[], handlers: CliHandlers, subcommand: string) =>
+  void createCli(handlers).parse([...argvPrefix(argv), subcommand, "--help"], { run: false })
+
+const explicitCommand = (argv: string[], handlers: CliHandlers) => {
+  const cli = createCli(handlers)
+  cli.showHelpOnExit = false
+  cli.parse(argv, { run: false })
+  if (cli.matchedCommandName) return cli.matchedCommandName
+  if (cli.args[0]) throw new ExitError(`Unknown command \`${cli.args[0]}\``, 1)
+  return undefined
 }
 
 export const runCli = async (argv = process.argv, handlers: CliHandlers = defaultCliHandlers) => {
   const cli = createCli(handlers)
-  const command = explicitCommand(cli, argv)
+  const command = explicitCommand(argv, handlers)
   const parsed = cli.parse(argv, { run: false }) as { options: Record<string, unknown> }
   const helpRequested = !!parsed.options.help || !!parsed.options.h
-  if (!command && !helpRequested) {
+  if (!command) {
+    if (helpRequested) {
+      printSubcommandHelp(argv, handlers, "tui")
+      return
+    }
     await handlers.tui(parsed.options)
     return
   }

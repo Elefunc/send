@@ -35,12 +35,12 @@ In the TUI, the room row includes a `📋` invite link that opens the equivalent
 `--self` accepts three forms:
 
 - `name`
-- `name-ID`
-- `-ID` using the attached CLI form `--self=-ab12cd34`
+- `name-id`
+- `-id` using the attached CLI form `--self=-ab12cd34`
 
 `SEND_SELF` supports the same raw values, including `SEND_SELF=-ab12cd34`.
 
-The ID suffix must be exactly 8 lowercase alphanumeric characters.
+The `id` suffix must be exactly 8 lowercase alphanumeric characters.
 
 ## Examples
 

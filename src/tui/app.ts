@@ -2,6 +2,19 @@ import { resolve } from "node:path"
 import { BACKEND_RAW_WRITE_MARKER, rgb, ui, type BackendRawWrite, type BadgeVariant, type TextStyle, type UiEvent, type VNode } from "@rezi-ui/core"
 import { createNodeApp } from "@rezi-ui/node"
 import { inspectLocalFile } from "../core/files"
+import {
+  DEFAULT_WEB_URL,
+  inviteCliCommand as formatInviteCliCommand,
+  inviteCliPackageName as formatInviteCliPackageName,
+  inviteCliText as formatInviteCliText,
+  inviteCopyUrl as formatInviteCopyUrl,
+  inviteWebLabel as formatInviteWebLabel,
+  renderCliCommand as renderSharedCliCommand,
+  renderWebUrl,
+  resolveWebUrlBase as resolveSharedWebUrlBase,
+  schemeLessUrlText,
+  webInviteUrl as formatWebInviteUrl,
+} from "../core/invite"
 import { isSessionAbortedError, SendSession, signalMetricState, type PeerSnapshot, type SessionConfig, type SessionSnapshot, type TransferSnapshot } from "../core/session"
 import { cleanLocalId, cleanName, cleanRoom, displayPeerName, fallbackName, formatBytes, type LogEntry, peerDefaultsToken, type PeerProfile, uid } from "../core/protocol"
 import { FILE_SEARCH_VISIBLE_ROWS, type FileSearchEvent, type FileSearchMatch, type FileSearchRequest } from "./file-search-protocol"
@@ -87,6 +100,7 @@ export interface TuiActions {
   closeInviteDropdown: TuiAction
   copyWebInvite: TuiAction
   copyCliInvite: TuiAction
+  copyLogs: TuiAction
   jumpToRandomRoom: TuiAction
   commitRoom: TuiAction
   setRoomInput: (value: string) => void
@@ -129,7 +143,6 @@ const METRIC_BORDER_STYLE = { fg: rgb(20, 25, 32) } as const
 const PRIMARY_TEXT_STYLE = { fg: rgb(255, 255, 255) } as const
 const HEADING_TEXT_STYLE = { fg: rgb(255, 255, 255), bold: true } as const
 const MUTED_TEXT_STYLE = { fg: rgb(159, 166, 178) } as const
-const DEFAULT_WEB_URL = "https://rtme.sh/"
 const DEFAULT_SAVE_DIR = resolve(process.cwd())
 const ABOUT_ELEFUNC_URL = "https://rtme.sh/send"
 const ABOUT_TITLE = "About Send"
@@ -141,7 +154,6 @@ const ABOUT_BULLETS = [
   "• The CLI streams incoming saves straight to disk in the current save directory, with overwrite available through the CLI flag.",
   "• Other features include copyable web and CLI invites, rendered-peer filtering and selection, TURN sharing, and live connection insight like signaling state, RTT, data state, and path labels.",
 ] as const
-const COPY_SERVICE_URL = "https://copy.rt.ht/"
 const TRANSFER_DIRECTION_ARROW = {
   out: { glyph: "↗", style: { fg: rgb(170, 217, 76), bold: true } },
   in: { glyph: "↙", style: { fg: rgb(240, 113, 120), bold: true } },
@@ -160,8 +172,6 @@ export const isEditableFocusId = (focusedId: string | null) =>
   focusedId === ROOM_INPUT_ID || focusedId === NAME_INPUT_ID || focusedId === PEER_SEARCH_INPUT_ID || focusedId === DRAFT_INPUT_ID
 export const shouldSwallowQQuit = (focusedId: string | null) => !isEditableFocusId(focusedId)
 
-const hashBool = (value: boolean) => value ? "1" : "0"
-const safeShellArgPattern = /^[A-Za-z0-9._/:?=&,+@%-]+$/
 const TUI_QUIT_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const
 type TuiQuitSignal = (typeof TUI_QUIT_SIGNALS)[number]
 type ProcessSignalLike = {
@@ -177,63 +187,30 @@ type BunSpawn = (cmd: string[], options: {
 type BunLike = { spawn?: BunSpawn }
 type ShareUrlState = Pick<TuiState, "snapshot" | "hideTerminalPeers" | "autoAcceptIncoming" | "autoOfferOutgoing" | "autoSaveIncoming" | "overwriteIncoming">
 type ShareCliState = ShareUrlState & Pick<TuiState, "sessionSeed" | "eventsExpanded">
-const shellQuote = (value: string) => safeShellArgPattern.test(value) ? value : `'${value.replaceAll("'", `'\"'\"'`)}'`
-const appendCliFlag = (args: string[], flag: string, value?: string | null) => {
-  const text = `${value ?? ""}`.trim()
-  if (!text) return
-  args.push(flag, shellQuote(text))
-}
-const SHARE_TOGGLE_FLAGS = [
-  ["clean", "hideTerminalPeers", "--clean"],
-  ["accept", "autoAcceptIncoming", "--accept"],
-  ["offer", "autoOfferOutgoing", "--offer"],
-  ["save", "autoSaveIncoming", "--save"],
-] as const satisfies readonly (readonly [string, keyof ShareUrlState, string])[]
-const appendToggleCliFlags = (args: string[], state: ShareUrlState) => {
-  for (const [, stateKey, flag] of SHARE_TOGGLE_FLAGS) if (!state[stateKey]) appendCliFlag(args, flag, "0")
-  if (state.overwriteIncoming) args.push("--overwrite")
-}
-const buildHashParams = (state: ShareUrlState, omitDefaults = false) => {
-  const params = new URLSearchParams({ room: cleanRoom(state.snapshot.room) })
-  for (const [key, stateKey] of SHARE_TOGGLE_FLAGS) if (!omitDefaults || !state[stateKey]) params.set(key, hashBool(state[stateKey]))
-  if (!omitDefaults || state.overwriteIncoming) params.set("overwrite", hashBool(state.overwriteIncoming))
-  return params
-}
-const shareTurnCliArgs = (sessionSeed: SessionSeed) => {
-  const turnUrls = [...new Set((sessionSeed.turnUrls ?? []).map(url => `${url ?? ""}`.trim()).filter(Boolean))]
-  if (!turnUrls.length) return []
-  const args: string[] = []
-  for (const turnUrl of turnUrls) appendCliFlag(args, "--turn-url", turnUrl)
-  appendCliFlag(args, "--turn-username", sessionSeed.turnUsername)
-  appendCliFlag(args, "--turn-credential", sessionSeed.turnCredential)
-  return args
-}
-
-export const resolveWebUrlBase = (value = process.env.SEND_WEB_URL) => {
-  const candidate = `${value ?? ""}`.trim() || DEFAULT_WEB_URL
-  try {
-    return new URL(candidate).toString()
-  } catch {
-    return DEFAULT_WEB_URL
-  }
-}
-
-const renderWebUrl = (state: ShareUrlState, baseUrl = DEFAULT_WEB_URL, omitDefaults = true) => {
-  const url = new URL(baseUrl)
-  url.hash = buildHashParams(state, omitDefaults).toString()
-  return url.toString()
-}
-const schemeLessUrlText = (text: string) => text.replace(/^[a-z]+:\/\//, "")
-export const inviteWebLabel = (state: ShareUrlState, baseUrl = resolveWebUrlBase()) => schemeLessUrlText(webInviteUrl(state, baseUrl))
-export const inviteCliPackageName = (baseUrl = resolveWebUrlBase()) => new URL(resolveWebUrlBase(baseUrl)).hostname
-export const inviteCliCommand = (state: ShareUrlState) => {
-  const args: string[] = []
-  appendCliFlag(args, "--room", state.snapshot.room)
-  appendToggleCliFlags(args, state)
-  return args.join(" ")
-}
-export const inviteCliText = (state: ShareUrlState, baseUrl = resolveWebUrlBase()) => `bunx ${inviteCliPackageName(baseUrl)} ${inviteCliCommand(state)}`
-export const inviteCopyUrl = (text: string) => `${COPY_SERVICE_URL}#${new URLSearchParams({ text })}`
+const shareUrlOptions = (state: ShareUrlState) => ({
+  room: cleanRoom(state.snapshot.room),
+  clean: state.hideTerminalPeers,
+  accept: state.autoAcceptIncoming,
+  offer: state.autoOfferOutgoing,
+  save: state.autoSaveIncoming,
+  overwrite: state.overwriteIncoming,
+})
+const shareCliOptions = (state: ShareCliState) => ({
+  ...shareUrlOptions(state),
+  self: displayPeerName(state.snapshot.name, state.snapshot.localId),
+  events: state.eventsExpanded,
+  saveDir: state.snapshot.saveDir,
+  defaultSaveDir: DEFAULT_SAVE_DIR,
+  turnUrls: state.sessionSeed.turnUrls,
+  turnUsername: state.sessionSeed.turnUsername,
+  turnCredential: state.sessionSeed.turnCredential,
+})
+export const resolveWebUrlBase = (value = process.env.SEND_WEB_URL) => resolveSharedWebUrlBase(value)
+export const inviteWebLabel = (state: ShareUrlState, baseUrl = resolveWebUrlBase()) => formatInviteWebLabel(shareUrlOptions(state), baseUrl)
+export const inviteCliPackageName = (baseUrl = resolveWebUrlBase()) => formatInviteCliPackageName(baseUrl)
+export const inviteCliCommand = (state: ShareUrlState) => formatInviteCliCommand(shareUrlOptions(state))
+export const inviteCliText = (state: ShareUrlState, baseUrl = resolveWebUrlBase()) => formatInviteCliText(shareUrlOptions(state), baseUrl)
+export const inviteCopyUrl = (text: string) => formatInviteCopyUrl(text)
 export const buildOsc52ClipboardSequence = (text: string) => text ? `\u001b]52;c;${Buffer.from(text).toString("base64")}\u0007` : ""
 export const externalOpenCommand = (url: string, platform = process.platform) =>
   platform === "darwin" ? ["open", url]
@@ -244,30 +221,17 @@ const getBackendRawWriter = (backend: unknown): BackendRawWrite | null => {
   return typeof marker === "function" ? marker as BackendRawWrite : null
 }
 const getBunRuntime = () => (globalThis as typeof globalThis & { Bun?: BunLike }).Bun ?? null
-const renderCliCommand = (state: ShareCliState, { includeSelf = false, includePrefix = false } = {}) => {
-  const args = includePrefix ? ["bunx", "rtme.sh"] : []
-  appendCliFlag(args, "--room", state.snapshot.room)
-  if (includeSelf) appendCliFlag(args, "--self", displayPeerName(state.snapshot.name, state.snapshot.localId))
-  appendToggleCliFlags(args, state)
-  if (state.eventsExpanded) args.push("--events")
-  if (resolve(state.snapshot.saveDir) !== DEFAULT_SAVE_DIR) appendCliFlag(args, "--save-dir", state.snapshot.saveDir)
-  args.push(...shareTurnCliArgs(state.sessionSeed))
-  return args.join(" ")
-}
+export const webInviteUrl = (state: ShareUrlState, baseUrl = resolveWebUrlBase()) => formatWebInviteUrl(shareUrlOptions(state), baseUrl)
 
-export const webInviteUrl = (state: ShareUrlState, baseUrl = resolveWebUrlBase()) => {
-  return renderWebUrl(state, baseUrl)
-}
+export const aboutWebUrl = (state: ShareUrlState, baseUrl = DEFAULT_WEB_URL) => renderWebUrl(shareUrlOptions(state), baseUrl)
 
-export const aboutWebUrl = (state: ShareUrlState, baseUrl = DEFAULT_WEB_URL) => renderWebUrl(state, baseUrl)
+export const aboutWebLabel = (state: ShareUrlState, baseUrl = DEFAULT_WEB_URL) => schemeLessUrlText(aboutWebUrl(state, baseUrl))
 
-export const aboutWebLabel = (state: ShareUrlState, baseUrl = DEFAULT_WEB_URL) => aboutWebUrl(state, baseUrl).replace(/^https:\/\//, "")
+export const aboutCliCommand = (state: ShareCliState) => renderSharedCliCommand(shareCliOptions(state))
 
-export const aboutCliCommand = (state: ShareCliState) => renderCliCommand(state)
+export const resumeWebUrl = (state: ShareUrlState, baseUrl = DEFAULT_WEB_URL) => renderWebUrl(shareUrlOptions(state), baseUrl)
 
-export const resumeWebUrl = (state: ShareUrlState, baseUrl = DEFAULT_WEB_URL) => renderWebUrl(state, baseUrl)
-
-export const resumeCliCommand = (state: ShareCliState) => renderCliCommand(state, { includeSelf: true, includePrefix: true })
+export const resumeCliCommand = (state: ShareCliState) => renderSharedCliCommand(shareCliOptions(state), { includeSelf: true, includePrefix: true, packageName: "rtme.sh" })
 
 export const resumeOutputLines = (state: ShareCliState) => [
   "Rejoin with:",
@@ -312,6 +276,7 @@ export const createNoopTuiActions = (): TuiActions => ({
   closeInviteDropdown: noop,
   copyWebInvite: noop,
   copyCliInvite: noop,
+  copyLogs: noop,
   jumpToRandomRoom: noop,
   commitRoom: noop,
   setRoomInput: noop,
@@ -347,6 +312,15 @@ const shortText = (value: unknown, max = 88) => {
   const text = typeof value === "string" ? value : JSON.stringify(value)
   return text.length <= max ? text : `${text.slice(0, Math.max(0, max - 1))}…`
 }
+const formatLogPayloadText = (payload: unknown) => {
+  if (typeof payload === "string") return payload
+  try {
+    return JSON.stringify(payload, null, 2) ?? `${payload}`
+  } catch {
+    return `${payload}`
+  }
+}
+export const formatLogsForCopy = (logs: readonly LogEntry[]) => logs.map(log => `${timeFormat.format(log.at)} ${log.kind}\n${formatLogPayloadText(log.payload)}`).join("\n\n")
 const toggleIntent = (active: boolean) => active ? "success" : "secondary"
 const statusKind = (socketState: SessionSnapshot["socketState"]) => socketState === "open" ? "online" : socketState === "connecting" ? "busy" : socketState === "error" ? "offline" : "away"
 const peerConnectionStatusKind = (status: string) => ({
@@ -1276,8 +1250,8 @@ const renderEventsCard = (state: TuiState, actions: TuiActions) => denseSection(
   id: "events-card",
   title: "Events",
   actions: [
+    actionButton("copy-events", "Copy", actions.copyLogs, "secondary", !state.snapshot.logs.length),
     actionButton("clear-events", "Clear", actions.clearLogs, "warning", !state.snapshot.logs.length),
-    actionButton("hide-events", "Hide", actions.toggleEvents),
   ],
 }, [
   ui.box({ maxHeight: 24, overflow: "scroll" }, [
@@ -1394,23 +1368,30 @@ export const startTui = async (initialConfig: SessionConfig, launchOptions: TuiL
       return false
     }
   }
-  const copyInvitePayload = async (payload: string, label: "WEB" | "CLI") => {
-    const closeDropdown = (notice: Notice) => commit(current => withNotice({ ...current, inviteDropdownOpen: false }, notice))
+  const copyTextPayload = async (payload: string, notices: { copied: string; opened: string; failed: string }, finish = (notice: Notice) => commit(current => withNotice(current, notice))) => {
     const rawWrite = getBackendRawWriter(app.backend)
     if (rawWrite && await ensureOsc52Support()) {
       const sequence = buildOsc52ClipboardSequence(payload)
       if (sequence) {
         try {
           rawWrite(sequence)
-          closeDropdown({ text: `Copied ${label} invite.`, variant: "success" })
+          finish({ text: notices.copied, variant: "success" })
           return
         } catch {}
       }
     }
     const opened = openExternalUrl(inviteCopyUrl(payload))
-    closeDropdown(opened
-      ? { text: `Opened ${label} copy link.`, variant: "info" }
-      : { text: `Unable to copy ${label} invite.`, variant: "error" })
+    finish(opened
+      ? { text: notices.opened, variant: "info" }
+      : { text: notices.failed, variant: "error" })
+  }
+  const copyInvitePayload = async (payload: string, label: "WEB" | "CLI") => {
+    const closeDropdown = (notice: Notice) => commit(current => withNotice({ ...current, inviteDropdownOpen: false }, notice))
+    await copyTextPayload(payload, {
+      copied: `Copied ${label} invite.`,
+      opened: `Opened ${label} copy link.`,
+      failed: `Unable to copy ${label} invite.`,
+    }, closeDropdown)
   }
 
   const flushUpdate = () => {
@@ -1761,6 +1742,15 @@ export const startTui = async (initialConfig: SessionConfig, launchOptions: TuiL
     closeInviteDropdown: () => commit(current => current.inviteDropdownOpen ? { ...current, inviteDropdownOpen: false } : current),
     copyWebInvite: () => { void copyInvitePayload(webInviteUrl(state), "WEB") },
     copyCliInvite: () => { void copyInvitePayload(inviteCliText(state), "CLI") },
+    copyLogs: () => {
+      const payload = formatLogsForCopy(state.snapshot.logs)
+      if (!payload) return
+      void copyTextPayload(payload, {
+        copied: "Copied events.",
+        opened: "Opened event copy link.",
+        failed: "Unable to copy events.",
+      })
+    },
     jumpToRandomRoom: () => replaceSession({ ...state.sessionSeed, room: uid(8) }, "Joined a new room."),
     commitRoom,
     setRoomInput: value => commit(current => ({ ...current, roomInput: value })),

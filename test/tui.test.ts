@@ -2,10 +2,11 @@ import { describe, expect, test } from "bun:test"
 import { EventEmitter } from "node:events"
 import { tuiRuntime, reziCore } from "./runtime"
 import type { PeerSnapshot, TransferSnapshot } from "../src/core/session"
+import type { LogEntry } from "../src/core/protocol"
 import { fallbackName } from "../src/core/protocol"
 
 const { createTestRenderer, rgb, ui } = reziCore
-const { aboutCliCommand, aboutWebLabel, aboutWebUrl, buildOsc52ClipboardSequence, canAcceptFilePreviewWithRight, canNavigateDraftHistory, clampFilePreviewSelectedIndex, consumeSatisfiedFocusRequest, createInitialTuiState, createNoopTuiActions, createQuitController, deriveBootFocusState, ensureFilePreviewScrollTop, externalOpenCommand, filePreviewVisible, groupTransfersByPeer, inviteCliText, inviteCopyUrl, inviteWebLabel, isDraftHistoryEntryPoint, isEditableFocusId, moveDraftHistory, moveFilePreviewSelection, previewPathSegments, previewSegmentStyle, pushDraftHistoryEntry, renderTuiView, renderedReadySelectedPeers, resolveWebUrlBase, resumeCliCommand, resumeOutputLines, resumeWebUrl, scheduleBootNameJump, shouldSwallowQQuit, statusToneVariant, transferSummaryStats, visiblePanes, webInviteUrl, withAcceptedDraftInput } = tuiRuntime
+const { aboutCliCommand, aboutWebLabel, aboutWebUrl, buildOsc52ClipboardSequence, canAcceptFilePreviewWithRight, canNavigateDraftHistory, clampFilePreviewSelectedIndex, consumeSatisfiedFocusRequest, createInitialTuiState, createNoopTuiActions, createQuitController, deriveBootFocusState, ensureFilePreviewScrollTop, externalOpenCommand, filePreviewVisible, formatLogsForCopy, groupTransfersByPeer, inviteCliText, inviteCopyUrl, inviteWebLabel, isDraftHistoryEntryPoint, isEditableFocusId, moveDraftHistory, moveFilePreviewSelection, previewPathSegments, previewSegmentStyle, pushDraftHistoryEntry, renderTuiView, renderedReadySelectedPeers, resolveWebUrlBase, resumeCliCommand, resumeOutputLines, resumeWebUrl, scheduleBootNameJump, shouldSwallowQQuit, statusToneVariant, transferSummaryStats, visiblePanes, webInviteUrl, withAcceptedDraftInput } = tuiRuntime
 
 const createWideRenderer = () => createTestRenderer({ viewport: { cols: 180, rows: 60 } })
 const hasRenderedText = (view: ReturnType<ReturnType<typeof createWideRenderer>["render"]>, value: string) =>
@@ -1530,7 +1531,7 @@ describe("TUI view", () => {
     expect(hasRenderedText(empty, "Waiting for peers in demo...")).toBe(true)
   })
 
-  test("sorts peers by id and filters them by name-ID substring", () => {
+  test("sorts peers by id and filters them by name-id substring", () => {
     const renderer = createWideRenderer()
     const state = createInitialTuiState({ room: "demo", reconnectSocket: false }, false)
     state.snapshot = {
@@ -1614,6 +1615,46 @@ describe("TUI view", () => {
     const shown = renderer.render(renderTuiView(createInitialTuiState({ room: "demo", reconnectSocket: false }, true), createNoopTuiActions()))
     expect(hidden.findById("events-card")).toBe(null)
     expect(shown.findById("events-card") === null).toBe(false)
+  })
+
+  test("renders event Copy alongside Clear and disables it when there are no logs", () => {
+    const renderer = createWideRenderer()
+    const state = createInitialTuiState({ room: "demo", reconnectSocket: false }, true)
+    const empty = renderer.render(renderTuiView(state, createNoopTuiActions()))
+    const emptyCopy = empty.findById("copy-events")
+    const emptyClear = empty.findById("clear-events")
+    expect(emptyCopy === null || emptyClear === null).toBe(false)
+    if (!emptyCopy || !emptyClear) throw new Error("missing event action buttons")
+    expect("disabled" in emptyCopy.props ? emptyCopy.props.disabled : false).toBe(true)
+    expect("disabled" in emptyClear.props ? emptyClear.props.disabled : false).toBe(true)
+
+    state.snapshot = {
+      ...state.snapshot,
+      logs: [{ id: "l1", at: Date.UTC(2024, 0, 2, 3, 4, 5), kind: "signal:in", level: "info", payload: { room: "demo" } }],
+    }
+    const populated = renderer.render(renderTuiView(state, createNoopTuiActions()))
+    const populatedCopy = populated.findById("copy-events")
+    expect(populatedCopy === null).toBe(false)
+    if (!populatedCopy) throw new Error("missing populated copy button")
+    expect("disabled" in populatedCopy.props ? populatedCopy.props.disabled : true).toBe(false)
+  })
+
+  test("formats copied events with local time headers and expanded payload blocks", () => {
+    const logs: LogEntry[] = [
+      { id: "l1", at: Date.UTC(2024, 0, 2, 3, 4, 5), kind: "signal:in", level: "info", payload: { room: "demo", ok: true } },
+      { id: "l2", at: Date.UTC(2024, 0, 2, 3, 4, 6), kind: "note", level: "error", payload: "plain text" },
+    ]
+    const time = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+    expect(formatLogsForCopy(logs)).toBe([
+      `${time.format(logs[0].at)} signal:in`,
+      "{",
+      '  "room": "demo",',
+      '  "ok": true',
+      "}",
+      "",
+      `${time.format(logs[1].at)} note`,
+      "plain text",
+    ].join("\n"))
   })
 
   test("does not render empty transfer sections", () => {
