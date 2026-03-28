@@ -310,11 +310,41 @@ export class SessionAbortedError extends Error {
 export const isSessionAbortedError = (error: unknown): error is SessionAbortedError =>
   error instanceof SessionAbortedError || error instanceof Error && error.name === "SessionAbortedError"
 
-const timeoutSignal = (ms: number, base?: AbortSignal | null) => {
-  const timeout = typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function" ? AbortSignal.timeout(ms) : undefined
-  if (!base) return timeout
-  if (!timeout) return base
-  return typeof AbortSignal.any === "function" ? AbortSignal.any([base, timeout]) : base
+const awaitAbortable = async <T>(promise: Promise<T>, signal?: AbortSignal | null) => {
+  if (!signal) return promise
+  if (signal.aborted) throw new SessionAbortedError()
+  return await new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      signal.removeEventListener("abort", onAbort)
+      reject(new SessionAbortedError())
+    }
+    signal.addEventListener("abort", onAbort, { once: true })
+    promise.then(
+      value => {
+        signal.removeEventListener("abort", onAbort)
+        resolve(value)
+      },
+      error => {
+        signal.removeEventListener("abort", onAbort)
+        reject(error)
+      },
+    )
+  })
+}
+
+const fetchWithTimeout = async (input: string | URL | Request, init: RequestInit, ms: number, base?: AbortSignal | null) => {
+  if (typeof AbortController !== "function") return fetch(input, init)
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(new Error(`timed out after ${ms}ms`)), ms)
+  const onAbort = () => controller.abort(new SessionAbortedError())
+  if (base?.aborted) onAbort()
+  else base?.addEventListener("abort", onAbort, { once: true })
+  try {
+    return await fetch(input, { ...init, signal: controller.signal })
+  } finally {
+    clearTimeout(timeout)
+    base?.removeEventListener("abort", onAbort)
+  }
 }
 
 const normalizeCandidateType = (value: unknown) => typeof value === "string" ? value.toLowerCase() : ""
@@ -490,9 +520,8 @@ export class SendSession {
     this.lifecycleAbortController = typeof AbortController === "function" ? new AbortController() : null
     this.startPeerStatsPolling()
     this.startPulsePolling()
-    void this.loadLocalProfile()
-    void this.probePulse()
-    this.connectSocket()
+    await awaitAbortable(Promise.allSettled([this.loadLocalProfile(), this.probePulse()]), this.lifecycleAbortController?.signal) // Avoid the Bun Windows TUI TLS startup bug: https://github.com/oven-sh/bun/issues/28612
+    this.connectSocket() // Intentionally defer socket startup until after initial HTTPS calls: https://github.com/oven-sh/bun/issues/28612
     await this.waitFor(() => this.socketState === "open", timeoutMs, this.lifecycleAbortController?.signal)
   }
 
@@ -1176,7 +1205,7 @@ export class SendSession {
 
   private async loadLocalProfile() {
     try {
-      const response = await fetch(PROFILE_URL, { cache: "no-store", signal: timeoutSignal(4000, this.lifecycleAbortController?.signal) })
+      const response = await fetchWithTimeout(PROFILE_URL, { cache: "no-store" }, 4000, this.lifecycleAbortController?.signal)
       if (!response.ok) throw new Error(`profile ${response.status}`)
       const data = await response.json()
       if (this.stopped) return
@@ -1196,7 +1225,7 @@ export class SendSession {
     this.pulse = { ...this.pulse, state: "checking", error: "" }
     this.notify()
     try {
-      const response = await fetch(SIGNAL_PULSE_URL, { cache: "no-store", signal: timeoutSignal(3500, this.lifecycleAbortController?.signal) })
+      const response = await fetchWithTimeout(SIGNAL_PULSE_URL, { cache: "no-store" }, 3500, this.lifecycleAbortController?.signal)
       if (!response.ok) throw new Error(`pulse ${response.status}`)
       if (this.stopped) return
       this.pulse = { state: "open", lastSettledState: "open", at: Date.now(), ms: performance.now() - startedAt, error: "" }

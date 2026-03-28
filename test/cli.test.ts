@@ -330,7 +330,7 @@ describe("CLI surface", () => {
       await withStdoutTTY(false, async () => {
         const output = await captureConsole(() => runCli(["bun", "send", "accept", "--help"]))
         expect(output).toContain("Usage:\n  $ send accept")
-        expect(output).toContain("--overwrite")
+        expect(output).toContain("-o, --overwrite")
       })
     })
   })
@@ -343,7 +343,7 @@ describe("CLI surface", () => {
 
   test("defaults no-subcommand option-only invocations to tui", async () => {
     const { calls, handlers } = createHandlerSpies()
-    await runCli(["bun", "send", "--room", "demo", "--events", "--overwrite", "--to", "peer", "--bogus"], handlers)
+    await runCli(["bun", "send", "--room", "demo", "--events", "-o", "--to", "peer", "--bogus"], handlers)
     expect(calls.length).toBe(1)
     expect(calls[0]?.name).toBe("tui")
     expect(calls[0]?.args[0]).toEqual({
@@ -354,6 +354,18 @@ describe("CLI surface", () => {
       to: "peer",
       bogus: true,
     })
+  })
+
+  test("accept command accepts the -o overwrite alias", async () => {
+    const { calls, handlers } = createHandlerSpies()
+    await runCli(["bun", "send", "accept", "-o"], handlers)
+    expect(calls).toEqual([{ name: "accept", args: [{ "--": [], overwrite: true }] }])
+  })
+
+  test("tui command accepts the -o overwrite alias", async () => {
+    const { calls, handlers } = createHandlerSpies()
+    await runCli(["bun", "send", "tui", "-o"], handlers)
+    expect(calls).toEqual([{ name: "tui", args: [{ "--": [], overwrite: true }] }])
   })
 
   test("top-level help does not default to tui", async () => {
@@ -536,7 +548,7 @@ describe("CLI surface", () => {
         expect(output).toContain("--accept <0|1>             auto-accept incoming offers: 1 on, 0 off (default: 1)")
         expect(output).toContain("--offer <0|1>              auto-offer drafts to matching ready peers: 1 on, 0 off (default: 1)")
         expect(output).toContain("--save <0|1>               auto-save completed incoming files: 1 on, 0 off (default: 1)")
-        expect(output).toContain("--overwrite")
+        expect(output).toContain("-o, --overwrite")
         expect(output).toContain("self identity: `name`, `name-id`, or `-id`")
         expect(output.includes("--name <name>")).toBe(false)
         expect(output).toContain("--events")

@@ -68,7 +68,7 @@ const TURN_OPTIONS = [
   ["--turn-username <value>", "custom TURN username"],
   ["--turn-credential <value>", "custom TURN credential"],
 ] as const
-const OVERWRITE_OPTION = ["--overwrite", "overwrite same-name saved files instead of creating copies"] as const
+const OVERWRITE_OPTION = ["-o, --overwrite", "overwrite same-name saved files instead of creating copies"] as const
 const SAVE_DIR_OPTION = ["--save-dir <dir>", "save directory", { default: "." }] as const
 const TUI_TOGGLE_OPTIONS = [
   ["--clean <0|1>", "show only active peers when 1; show terminal peers too when 0", { default: 1 }],
@@ -80,6 +80,13 @@ export const ACCEPT_SESSION_DEFAULTS = { autoAcceptIncoming: true, autoSaveIncom
 type CliOptionDefinition = readonly [flag: string, description: string, config?: { default?: unknown }]
 const addOptions = (command: CliCommand, definitions: readonly CliOptionDefinition[]) =>
   definitions.reduce((next, [flag, description, config]) => next.option(flag, description, config), command)
+const normalizeCliOptions = (options: Record<string, unknown>) => {
+  const normalized = { ...options }
+  if (normalized.overwrite == null && normalized.o != null) normalized.overwrite = normalized.o
+  delete normalized.h
+  delete normalized.o
+  return normalized
+}
 const withTrailingHelpLine = <T extends { outputHelp: () => void }>(target: T) => {
   const outputHelp = target.outputHelp.bind(target)
   target.outputHelp = () => {
@@ -323,7 +330,7 @@ export const createCli = (handlers: CliHandlers = defaultCliHandlers) => {
     ["--json", "print a json snapshot"],
     SAVE_DIR_OPTION,
     ...TURN_OPTIONS,
-  ])).action(handlers.peers)
+  ])).action(options => handlers.peers(normalizeCliOptions(options)))
 
   withTrailingHelpLine(addOptions(cli.command("offer [...files]", "offer files to browser-compatible peers").ignoreOptionDefaultValue(), [
     ...ROOM_SELF_OPTIONS,
@@ -332,7 +339,7 @@ export const createCli = (handlers: CliHandlers = defaultCliHandlers) => {
     ["--json", "emit ndjson events"],
     SAVE_DIR_OPTION,
     ...TURN_OPTIONS,
-  ])).action(handlers.offer)
+  ])).action((files, options) => handlers.offer(files, normalizeCliOptions(options)))
 
   withTrailingHelpLine(addOptions(cli.command("accept", "receive and save files").ignoreOptionDefaultValue(), [
     ...ROOM_SELF_OPTIONS,
@@ -341,7 +348,7 @@ export const createCli = (handlers: CliHandlers = defaultCliHandlers) => {
     ["--once", "exit after the first saved incoming transfer"],
     ["--json", "emit ndjson events"],
     ...TURN_OPTIONS,
-  ])).action(handlers.accept)
+  ])).action(options => handlers.accept(normalizeCliOptions(options)))
 
   withTrailingHelpLine(addOptions(cli.command("tui", "launch the interactive terminal UI").ignoreOptionDefaultValue(), [
     ...ROOM_SELF_OPTIONS,
@@ -350,7 +357,7 @@ export const createCli = (handlers: CliHandlers = defaultCliHandlers) => {
     SAVE_DIR_OPTION,
     OVERWRITE_OPTION,
     ...TURN_OPTIONS,
-  ])).action(handlers.tui)
+  ])).action(options => handlers.tui(normalizeCliOptions(options)))
 
   cli.help(sections => {
     const usage = sections.find(section => section.title === "Usage:")
@@ -391,7 +398,7 @@ export const runCli = async (argv = process.argv, handlers: CliHandlers = defaul
       printSubcommandHelp(argv, handlers, "tui")
       return
     }
-    await handlers.tui(parsed.options)
+    await handlers.tui(normalizeCliOptions(parsed.options))
     return
   }
   await cli.runMatchedCommand()
