@@ -1,6 +1,7 @@
 node_modules/
 downloads/
 coverage/
+out/
 *.tsbuildinfo
 npm-debug.log*
 bun-debug.log*
