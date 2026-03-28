@@ -557,6 +557,22 @@ describe("SendSession mutators", () => {
     await rm(dir, { recursive: true, force: true })
   })
 
+  test("applies overwrite mode changes to later manual saves", async () => {
+    const dir = join(process.cwd(), ".tmp-send-session-overwrite-live-complete")
+    await rm(dir, { recursive: true, force: true })
+    await mkdir(dir, { recursive: true })
+    await Bun.write(join(dir, "hello.txt"), "old")
+    const session = new SendSession({ room: "demo", saveDir: dir, reconnectSocket: false }) as any
+    session.transfers.set("t1", incomingTransfer({ status: "complete", data: Buffer.from("hello") }))
+
+    expect(session.setOverwriteIncoming(true)).toBe(true)
+    const savedPath = await session.saveTransfer("t1")
+
+    expect(savedPath).toBe(join(dir, "hello.txt"))
+    expect(await readFile(savedPath, "utf8")).toBe("hello")
+    await rm(dir, { recursive: true, force: true })
+  })
+
   test("streams auto-saved incoming transfers straight to disk from receive start", async () => {
     const dir = join(process.cwd(), ".tmp-send-session-stream")
     await rm(dir, { recursive: true, force: true })
@@ -611,6 +627,28 @@ describe("SendSession mutators", () => {
     await rm(dir, { recursive: true, force: true })
   })
 
+  test("applies overwrite mode changes to later streamed transfers", async () => {
+    const dir = join(process.cwd(), ".tmp-send-session-stream-overwrite-live")
+    await rm(dir, { recursive: true, force: true })
+    await mkdir(dir, { recursive: true })
+    await Bun.write(join(dir, "hello.txt"), "old")
+    const session = new SendSession({ room: "demo", saveDir: dir, reconnectSocket: false, autoAcceptIncoming: true, autoSaveIncoming: true }) as any
+    const peer = readyPeer()
+    session.peers.set("p1", peer)
+
+    expect(session.setOverwriteIncoming(true)).toBe(true)
+    await session.handleTransferControl(peer, { kind: "file-offer", transferId: "t1", name: "hello.txt", size: 5, type: "text/plain", lastModified: 0, chunkSize: 5, totalChunks: 1, to: session.localId })
+    await session.handleTransferControl(peer, { kind: "file-start", transferId: "t1", to: session.localId })
+    const transfer = session.transfers.get("t1")
+
+    session.onBinary(peer, Buffer.from("hello"))
+    await session.handleTransferControl(peer, { kind: "file-end", transferId: "t1", size: 5, totalChunks: 1, to: session.localId })
+
+    expect(transfer.savedPath).toBe(join(dir, "hello.txt"))
+    expect(await readFile(join(dir, "hello.txt"), "utf8")).toBe("hello")
+    await rm(dir, { recursive: true, force: true })
+  })
+
   test("lets the last streamed overwrite finisher win for concurrent same-name transfers", async () => {
     const dir = join(process.cwd(), ".tmp-send-session-stream-overwrite-concurrent")
     await rm(dir, { recursive: true, force: true })
@@ -634,6 +672,28 @@ describe("SendSession mutators", () => {
     expect(session.transfers.get("t1").savedPath).toBe(join(dir, "hello.txt"))
     expect(session.transfers.get("t2").savedPath).toBe(join(dir, "hello.txt"))
     expect(await readFile(join(dir, "hello.txt"), "utf8")).toBe("later")
+    await rm(dir, { recursive: true, force: true })
+  })
+
+  test("keeps the overwrite mode captured when a streamed transfer starts", async () => {
+    const dir = join(process.cwd(), ".tmp-send-session-stream-overwrite-captured")
+    await rm(dir, { recursive: true, force: true })
+    await mkdir(dir, { recursive: true })
+    await Bun.write(join(dir, "hello.txt"), "old")
+    const session = new SendSession({ room: "demo", saveDir: dir, reconnectSocket: false, autoAcceptIncoming: true, autoSaveIncoming: true, overwriteIncoming: true }) as any
+    const peer = readyPeer()
+    session.peers.set("p1", peer)
+
+    await session.handleTransferControl(peer, { kind: "file-offer", transferId: "t1", name: "hello.txt", size: 5, type: "text/plain", lastModified: 0, chunkSize: 5, totalChunks: 1, to: session.localId })
+    await session.handleTransferControl(peer, { kind: "file-start", transferId: "t1", to: session.localId })
+    expect(session.setOverwriteIncoming(false)).toBe(true)
+
+    session.onBinary(peer, Buffer.from("hello"))
+    await session.handleTransferControl(peer, { kind: "file-end", transferId: "t1", size: 5, totalChunks: 1, to: session.localId })
+
+    expect(session.transfers.get("t1").savedPath).toBe(join(dir, "hello.txt"))
+    expect(await readFile(join(dir, "hello.txt"), "utf8")).toBe("hello")
+    expect(await exists(join(dir, "hello (1).txt"))).toBe(false)
     await rm(dir, { recursive: true, force: true })
   })
 

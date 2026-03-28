@@ -117,6 +117,7 @@ export interface TuiActions {
   toggleAutoOffer: TuiAction
   toggleAutoAccept: TuiAction
   toggleAutoSave: TuiAction
+  toggleOverwrite: TuiAction
   setDraftInput: (value: string, cursor?: number) => void
   addDrafts: TuiAction
   removeDraft: (draftId: string) => void
@@ -151,7 +152,7 @@ const ABOUT_BULLETS = [
   "• Join a room, see who is there, and filter or select exactly which peers to target before offering files.",
   "• File data does not travel through the signaling service; Send uses lightweight signaling to discover peers and negotiate WebRTC, then transfers directly peer-to-peer when possible, with TURN relay when needed.",
   "• Incoming transfers can be auto-accepted and auto-saved, and same-name files can either stay as numbered copies or overwrite the original when that mode is enabled.",
-  "• The CLI streams incoming saves straight to disk in the current save directory, with overwrite available through the CLI flag.",
+  "• The CLI streams incoming saves straight to disk in the current save directory, with overwrite available through the CLI flag and the TUI Ctrl+O shortcut.",
   "• Other features include copyable web and CLI invites, rendered-peer filtering and selection, TURN sharing, and live connection insight like signaling state, RTT, data state, and path labels.",
 ] as const
 const TRANSFER_DIRECTION_ARROW = {
@@ -293,6 +294,7 @@ export const createNoopTuiActions = (): TuiActions => ({
   toggleAutoOffer: noop,
   toggleAutoAccept: noop,
   toggleAutoSave: noop,
+  toggleOverwrite: noop,
   setDraftInput: noop,
   addDrafts: noop,
   removeDraft: noop,
@@ -1261,8 +1263,12 @@ const renderEventsCard = (state: TuiState, actions: TuiActions) => denseSection(
   ]),
 ])
 
+const footerKeycapWidth = (keycap: string) => keycap.length + 2
+
 const renderFooterHint = (id: string, keycap: string, label: string) => ui.row({ id, gap: 0, items: "center" }, [
-  ui.kbd(keycap),
+  ui.box({ id: `${id}-keycap`, width: footerKeycapWidth(keycap), border: "none" }, [
+    ui.kbd(keycap),
+  ]),
   ui.text(` ${label}`, { style: { dim: true } }),
 ])
 
@@ -1273,7 +1279,7 @@ const renderFooter = (state: TuiState) => ui.statusBar({
     ui.toolbar({ id: "footer-hints", gap: 3 }, [
       renderFooterHint("footer-hint-tab", "tab", "focus/accept"),
       renderFooterHint("footer-hint-enter", "enter", "accept/add"),
-      renderFooterHint("footer-hint-esc", "esc", "hide/reset"),
+      renderFooterHint("footer-hint-ctrl-o", "ctrl+o", "overwrite"),
       renderFooterHint("footer-hint-ctrlc", "ctrl+c", "quit"),
     ]),
   ],
@@ -1822,6 +1828,15 @@ export const startTui = async (initialConfig: SessionConfig, launchOptions: TuiL
         error => commit(current => withNotice(current, { text: `${error}`, variant: "error" })),
       )
     },
+    toggleOverwrite: () => {
+      const next = !state.overwriteIncoming
+      state.session.setOverwriteIncoming(next)
+      commit(current => withNotice({
+        ...current,
+        overwriteIncoming: next,
+        sessionSeed: { ...current.sessionSeed, overwriteIncoming: next },
+      }, { text: next ? "Overwrite on." : "Overwrite off.", variant: next ? "success" : "warning" }))
+    },
     setDraftInput: (value, cursor) => updateDraftInput(value, cursor),
     addDrafts,
     removeDraft: draftId => commit(current => withNotice({ ...current, drafts: current.drafts.filter(draft => draft.id !== draftId) }, { text: "Draft removed.", variant: "warning" })),
@@ -1969,6 +1984,12 @@ export const startTui = async (initialConfig: SessionConfig, launchOptions: TuiL
       when: ctx => ctx.focusedId === DRAFT_INPUT_ID && filePreviewVisible(state) && state.filePreview.results.length > 0,
       handler: () => {
         commit(current => ({ ...current, filePreview: moveFilePreviewSelection(current.filePreview, 1) }))
+      },
+    },
+    "ctrl+o": {
+      description: "Toggle overwrite mode",
+      handler: () => {
+        actions.toggleOverwrite()
       },
     },
     enter: {

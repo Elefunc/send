@@ -103,6 +103,7 @@ interface IncomingDiskState {
   offset: number
   error: string
   closed: boolean
+  overwrite: boolean
 }
 
 export interface PeerSnapshot {
@@ -445,7 +446,7 @@ export class SendSession {
 
   private autoAcceptIncoming: boolean
   private autoSaveIncoming: boolean
-  private readonly overwriteIncoming: boolean
+  private overwriteIncoming: boolean
   private readonly reconnectSocket: boolean
   private iceServers: RTCIceServer[]
   private extraTurnServers: RTCIceServer[]
@@ -683,6 +684,14 @@ export class SendSession {
     return saved
   }
 
+  setOverwriteIncoming(enabled: boolean) {
+    const next = !!enabled
+    if (next === this.overwriteIncoming) return false
+    this.overwriteIncoming = next
+    this.notify()
+    return true
+  }
+
   cancelPendingOffers() {
     let cancelled = 0
     for (const transfer of this.transfers.values()) {
@@ -848,8 +857,9 @@ export class SendSession {
   }
 
   private async createIncomingDiskState(fileName: string): Promise<IncomingDiskState> {
-    const finalPath = await incomingOutputPath(this.saveDir, fileName || "download", this.overwriteIncoming, this.reservedSavePaths)
-    if (!this.overwriteIncoming) this.reservedSavePaths.add(finalPath)
+    const overwrite = this.overwriteIncoming
+    const finalPath = await incomingOutputPath(this.saveDir, fileName || "download", overwrite, this.reservedSavePaths)
+    if (!overwrite) this.reservedSavePaths.add(finalPath)
     for (let attempt = 0; ; attempt += 1) {
       const tempPath = `${finalPath}.part.${uid(6)}${attempt ? `.${attempt}` : ""}`
       try {
@@ -862,10 +872,11 @@ export class SendSession {
           offset: 0,
           error: "",
           closed: false,
+          overwrite,
         }
       } catch (error) {
         if ((error as NodeJS.ErrnoException | undefined)?.code === "EEXIST") continue
-        if (!this.overwriteIncoming) this.reservedSavePaths.delete(finalPath)
+        if (!overwrite) this.reservedSavePaths.delete(finalPath)
         throw error
       }
     }
@@ -935,12 +946,12 @@ export class SendSession {
         disk.closed = true
         await disk.handle.close()
       }
-      if (!this.overwriteIncoming && await pathExists(finalPath)) {
+      if (!disk.overwrite && await pathExists(finalPath)) {
         this.reservedSavePaths.delete(finalPath)
         finalPath = await uniqueOutputPath(this.saveDir, transfer.name || "download", this.reservedSavePaths)
         this.reservedSavePaths.add(finalPath)
       }
-      if (this.overwriteIncoming) await replaceOutputPath(disk.tempPath, finalPath)
+      if (disk.overwrite) await replaceOutputPath(disk.tempPath, finalPath)
       else await rename(disk.tempPath, finalPath)
       transfer.savedPath = finalPath
       transfer.savedAt ||= Date.now()
