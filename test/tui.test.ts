@@ -1617,6 +1617,23 @@ describe("TUI view", () => {
     expect(shown.findById("events-card") === null).toBe(false)
   })
 
+  test("aligns the single visible Events card with Files and removes extra shell borders", () => {
+    const renderer = createWideRenderer()
+    const state = createInitialTuiState({ room: "demo", reconnectSocket: false }, true)
+    const view = renderer.render(renderTuiView(state, createNoopTuiActions()))
+    const files = view.findById("files-card")
+    const shell = view.findById("events-shell")
+    const events = view.findById("events-card")
+    const viewport = view.findById("events-viewport")
+    expect(files === null || shell === null || events === null || viewport === null).toBe(false)
+    if (!files || !shell || !events || !viewport) throw new Error("missing Files or Events nodes")
+    expect(files.rect.y).toBe(events.rect.y)
+    expect(events.rect.x).toBe(shell.rect.x)
+    expect(events.props.border).toBe("rounded")
+    expect(shell.props.border).toBe("none")
+    expect(viewport.props.border).toBe("none")
+  })
+
   test("renders event Copy alongside Clear and disables it when there are no logs", () => {
     const renderer = createWideRenderer()
     const state = createInitialTuiState({ room: "demo", reconnectSocket: false }, true)

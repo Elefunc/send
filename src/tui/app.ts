@@ -1254,7 +1254,7 @@ const renderEventsCard = (state: TuiState, actions: TuiActions) => denseSection(
     actionButton("clear-events", "Clear", actions.clearLogs, "warning", !state.snapshot.logs.length),
   ],
 }, [
-  ui.box({ maxHeight: 24, overflow: "scroll" }, [
+  ui.box({ id: "events-viewport", maxHeight: 24, overflow: "scroll", border: "none" }, [
     state.snapshot.logs.length
       ? ui.column({ gap: 0 }, state.snapshot.logs.slice(0, 20).map(renderLogRow))
       : ui.empty("No events"),
@@ -1301,7 +1301,7 @@ export const renderTuiView = (state: TuiState, actions: TuiActions): VNode => {
           ...transferCards,
         ]),
       ]),
-      state.eventsExpanded ? ui.box({ id: "events-shell", width: 28, minHeight: 0 }, [renderEventsCard(state, actions)]) : null,
+      state.eventsExpanded ? ui.box({ id: "events-shell", width: 28, minHeight: 0, border: "none" }, [renderEventsCard(state, actions)]) : null,
     ]),
     footer: renderFooter(state),
     p: 0,

@@ -60,7 +60,7 @@ const SELF_HELP_TEXT = "self identity: `name`, `name-id`, or `-id`"
 const INVALID_SELF_ID_MESSAGE = `--self id suffix must be exactly ${SELF_ID_LENGTH} lowercase alphanumeric characters`
 type CliCommand = ReturnType<CAC["command"]>
 const ROOM_SELF_OPTIONS = [
-  ["--room <room>", "room id; omit to create a random room"],
+  ["--room <room>", "room id", { default: "<random>" }],
   ["--self <self>", SELF_HELP_TEXT],
 ] as const
 const TURN_OPTIONS = [
@@ -69,16 +69,17 @@ const TURN_OPTIONS = [
   ["--turn-credential <value>", "custom TURN credential"],
 ] as const
 const OVERWRITE_OPTION = ["--overwrite", "overwrite same-name saved files instead of creating copies"] as const
-const SAVE_DIR_OPTION = ["--save-dir <dir>", "save directory"] as const
+const SAVE_DIR_OPTION = ["--save-dir <dir>", "save directory", { default: "." }] as const
 const TUI_TOGGLE_OPTIONS = [
-  ["--clean <0|1>", "show only active peers when 1; show terminal peers too when 0"],
-  ["--accept <0|1>", "auto-accept incoming offers: 1 on, 0 off"],
-  ["--offer <0|1>", "auto-offer drafts to matching ready peers: 1 on, 0 off"],
-  ["--save <0|1>", "auto-save completed incoming files: 1 on, 0 off"],
+  ["--clean <0|1>", "show only active peers when 1; show terminal peers too when 0", { default: 1 }],
+  ["--accept <0|1>", "auto-accept incoming offers: 1 on, 0 off", { default: 1 }],
+  ["--offer <0|1>", "auto-offer drafts to matching ready peers: 1 on, 0 off", { default: 1 }],
+  ["--save <0|1>", "auto-save completed incoming files: 1 on, 0 off", { default: 1 }],
 ] as const
 export const ACCEPT_SESSION_DEFAULTS = { autoAcceptIncoming: true, autoSaveIncoming: true } as const
-const addOptions = (command: CliCommand, definitions: readonly (readonly [string, string])[]) =>
-  definitions.reduce((next, [flag, description]) => next.option(flag, description), command)
+type CliOptionDefinition = readonly [flag: string, description: string, config?: { default?: unknown }]
+const addOptions = (command: CliCommand, definitions: readonly CliOptionDefinition[]) =>
+  definitions.reduce((next, [flag, description, config]) => next.option(flag, description, config), command)
 const withTrailingHelpLine = <T extends { outputHelp: () => void }>(target: T) => {
   const outputHelp = target.outputHelp.bind(target)
   target.outputHelp = () => {
@@ -316,24 +317,24 @@ export const createCli = (handlers: CliHandlers = defaultCliHandlers) => {
   const cli = cac(name)
   cli.usage("[command] [options]")
 
-  withTrailingHelpLine(addOptions(cli.command("peers", "list discovered peers"), [
+  withTrailingHelpLine(addOptions(cli.command("peers", "list discovered peers").ignoreOptionDefaultValue(), [
     ...ROOM_SELF_OPTIONS,
-    ["--wait <ms>", "discovery wait in milliseconds"],
+    ["--wait <ms>", "discovery wait in milliseconds", { default: 3000 }],
     ["--json", "print a json snapshot"],
     SAVE_DIR_OPTION,
     ...TURN_OPTIONS,
   ])).action(handlers.peers)
 
-  withTrailingHelpLine(addOptions(cli.command("offer [...files]", "offer files to browser-compatible peers"), [
+  withTrailingHelpLine(addOptions(cli.command("offer [...files]", "offer files to browser-compatible peers").ignoreOptionDefaultValue(), [
     ...ROOM_SELF_OPTIONS,
-    ["--to <peer>", "target `name`, `name-id`, or `-id`; `.` targets all ready peers by default"],
-    ["--wait-peer <ms>", "wait for eligible peers in milliseconds; omit to wait indefinitely"],
+    ["--to <peer>", "target `name`, `name-id`, or `-id`", { default: "." }],
+    ["--wait-peer <ms>", "wait for eligible peers in milliseconds", { default: "<infinite>" }],
     ["--json", "emit ndjson events"],
     SAVE_DIR_OPTION,
     ...TURN_OPTIONS,
   ])).action(handlers.offer)
 
-  withTrailingHelpLine(addOptions(cli.command("accept", "receive and save files"), [
+  withTrailingHelpLine(addOptions(cli.command("accept", "receive and save files").ignoreOptionDefaultValue(), [
     ...ROOM_SELF_OPTIONS,
     SAVE_DIR_OPTION,
     OVERWRITE_OPTION,
@@ -342,7 +343,7 @@ export const createCli = (handlers: CliHandlers = defaultCliHandlers) => {
     ...TURN_OPTIONS,
   ])).action(handlers.accept)
 
-  withTrailingHelpLine(addOptions(cli.command("tui", "launch the interactive terminal UI"), [
+  withTrailingHelpLine(addOptions(cli.command("tui", "launch the interactive terminal UI").ignoreOptionDefaultValue(), [
     ...ROOM_SELF_OPTIONS,
     ...TUI_TOGGLE_OPTIONS,
     ["--events", "show the event log pane"],

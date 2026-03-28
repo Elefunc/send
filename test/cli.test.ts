@@ -501,13 +501,13 @@ describe("CLI surface", () => {
     await withCliHelpEnv({ name: "send" }, async () => {
       await withStdoutTTY(false, async () => {
         const output = await captureConsole(() => runCli(["bun", "send", "offer", "--help"]))
-        expect(output).toContain("omit to create a random room")
+        expect(output).toContain("--room <room>              room id (default: <random>)")
         expect(output).toContain("--self <self>")
         expect(output).toContain("self identity: `name`, `name-id`, or `-id`")
         expect(output.includes("--name <name>")).toBe(false)
-        expect(output).toContain("--to <peer>")
-        expect(output).toContain("target `name`, `name-id`, or `-id`; `.` targets all ready peers by default")
-        expect(output).toContain("omit to wait indefinitely")
+        expect(output).toContain("--to <peer>                target `name`, `name-id`, or `-id` (default: .)")
+        expect(output).toContain("--wait-peer <ms>           wait for eligible peers in milliseconds (default: <infinite>)")
+        expect(output).toContain("--save-dir <dir>           save directory (default: .)")
         expect(output.includes("--all-ready")).toBe(false)
       })
     })
@@ -530,17 +530,18 @@ describe("CLI surface", () => {
     await withCliHelpEnv({ name: "send" }, async () => {
       await withStdoutTTY(false, async () => {
         const output = await captureConsole(() => runCli(["bun", "send", "tui", "--help"]))
-        expect(output).toContain("omit to create a random room")
+        expect(output).toContain("--room <room>              room id (default: <random>)")
         expect(output).toContain("--self <self>")
-        expect(output).toContain("--clean <0|1>")
-        expect(output).toContain("--accept <0|1>")
-        expect(output).toContain("--offer <0|1>")
-        expect(output).toContain("--save <0|1>")
+        expect(output).toContain("--clean <0|1>              show only active peers when 1; show terminal peers too when 0 (default: 1)")
+        expect(output).toContain("--accept <0|1>             auto-accept incoming offers: 1 on, 0 off (default: 1)")
+        expect(output).toContain("--offer <0|1>              auto-offer drafts to matching ready peers: 1 on, 0 off (default: 1)")
+        expect(output).toContain("--save <0|1>               auto-save completed incoming files: 1 on, 0 off (default: 1)")
         expect(output).toContain("--overwrite")
         expect(output).toContain("self identity: `name`, `name-id`, or `-id`")
         expect(output.includes("--name <name>")).toBe(false)
         expect(output).toContain("--events")
         expect(output).toContain("show the event log pane")
+        expect(output).toContain("--save-dir <dir>           save directory (default: .)")
       })
     })
   })
@@ -560,14 +561,41 @@ describe("CLI surface", () => {
     }])
   })
 
+  test("tui command does not inject help defaults into omitted binary toggles", async () => {
+    const { calls, handlers } = createHandlerSpies()
+    await runCli(["bun", "send", "tui"], handlers)
+    expect(calls).toEqual([{ name: "tui", args: [{ "--": [] }] }])
+  })
+
+  test("peers command does not inject help defaults into omitted options", async () => {
+    const { calls, handlers } = createHandlerSpies()
+    await runCli(["bun", "send", "peers"], handlers)
+    expect(calls).toEqual([{ name: "peers", args: [{ "--": [] }] }])
+  })
+
+  test("offer command does not inject help defaults into omitted options", async () => {
+    const { calls, handlers } = createHandlerSpies()
+    await runCli(["bun", "send", "offer", "file.txt"], handlers)
+    expect(calls).toEqual([{ name: "offer", args: [["file.txt"], { "--": [] }] }])
+  })
+
+  test("accept command does not inject help defaults into omitted options", async () => {
+    const { calls, handlers } = createHandlerSpies()
+    await runCli(["bun", "send", "accept"], handlers)
+    expect(calls).toEqual([{ name: "accept", args: [{ "--": [] }] }])
+  })
+
   test("peers help documents optional random rooms", async () => {
     await withCliHelpEnv({ name: "send" }, async () => {
       await withStdoutTTY(false, async () => {
         const output = await captureConsole(() => runCli(["bun", "send", "peers", "--help"]))
-        expect(output).toContain("omit to create a random room")
+        expect(output).toContain("--room <room>              room id (default: <random>)")
         expect(output).toContain("--self <self>")
         expect(output).toContain("self identity: `name`, `name-id`, or `-id`")
         expect(output.includes("--name <name>")).toBe(false)
+        expect(output).toContain("--wait <ms>                discovery wait in milliseconds (default: 3000)")
+        expect(output).toContain("--save-dir <dir>")
+        expect(output).toContain("save directory (default: .)")
       })
     })
   })
@@ -576,10 +604,11 @@ describe("CLI surface", () => {
     await withCliHelpEnv({ name: "send" }, async () => {
       await withStdoutTTY(false, async () => {
         const output = await captureConsole(() => runCli(["bun", "send", "accept", "--help"]))
-        expect(output).toContain("omit to create a random room")
+        expect(output).toContain("--room <room>              room id (default: <random>)")
         expect(output).toContain("--self <self>")
         expect(output).toContain("self identity: `name`, `name-id`, or `-id`")
         expect(output.includes("--name <name>")).toBe(false)
+        expect(output).toContain("--save-dir <dir>           save directory (default: .)")
       })
     })
   })
