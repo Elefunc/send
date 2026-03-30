@@ -1,6 +1,5 @@
 import { resolve } from "node:path"
 import { BACKEND_RAW_WRITE_MARKER, rgb, ui, type BackendRawWrite, type BadgeVariant, type TextStyle, type UiEvent, type VNode } from "@rezi-ui/core"
-import { createNodeApp } from "@rezi-ui/node"
 import { inspectLocalFile, inspectLocalPaths } from "../core/files"
 import {
   DEFAULT_WEB_URL,
@@ -20,6 +19,7 @@ import { cleanLocalId, cleanName, cleanRoom, displayPeerName, fallbackName, form
 import { FILE_SEARCH_VISIBLE_ROWS, type FileSearchEvent, type FileSearchMatch, type FileSearchRequest } from "./file-search-protocol"
 import { deriveFileSearchScope, formatFileSearchDisplayPath, normalizeSearchQuery, offsetFileSearchMatchIndices } from "./file-search"
 import { applyInputEditEvent } from "./input-editor"
+import { createSendNodeApp, type SendNodeAppConfig } from "./send-node-app"
 import { installCheckboxClickPatch } from "../../runtime/rezi-checkbox-click"
 
 type Notice = { text: string; variant: "info" | "success" | "warning" | "error" }
@@ -167,6 +167,11 @@ const pluralRules = new Intl.PluralRules()
 const DRAFT_HISTORY_LIMIT = 50
 
 export const visiblePanes = (showEvents: boolean): VisiblePane[] => showEvents ? ["peers", "transfers", "logs"] : ["peers", "transfers"]
+export const TUI_NODE_APP_CONFIG = Object.freeze({
+  executionMode: "inline",
+  fpsCap: 30,
+  idlePollMs: 50,
+} satisfies SendNodeAppConfig)
 
 const noop = () => {}
 export const isEditableFocusId = (focusedId: string | null) =>
@@ -1397,7 +1402,7 @@ export const startTui = async (initialConfig: SessionConfig, launchOptions: TuiL
     drafts: launchDrafts.drafts.length ? launchDrafts.drafts : baseInitialState.drafts,
     notice: launchDrafts.notice ?? baseInitialState.notice,
   }
-  const app = createNodeApp<TuiState>({ initialState })
+  const app = createSendNodeApp<TuiState>({ initialState, config: TUI_NODE_APP_CONFIG })
   const quitController = createQuitController()
   let state = initialState
   let unsubscribe = () => {}

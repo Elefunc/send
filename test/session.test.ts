@@ -141,6 +141,21 @@ describe("SendSession mutators", () => {
     })
   })
 
+  test("coalesces same-turn subscriber notifications", async () => {
+    const session = new SendSession({ room: "demo", reconnectSocket: false }) as any
+    let notifications = 0
+    session.subscribe(() => {
+      notifications += 1
+    })
+
+    session.notify()
+    session.notify()
+
+    expect(notifications).toBe(0)
+    await Bun.sleep(0)
+    expect(notifications).toBe(1)
+  })
+
   test("notifies subscribers for inbound name updates", async () => {
     const session = new SendSession({ room: "demo", localId: "self", reconnectSocket: false }) as any
     const names: string[] = []
@@ -167,7 +182,7 @@ describe("SendSession mutators", () => {
       name: "bob",
     }))
 
-    expect(names).toEqual(["user", "alice", "bob"])
+    expect(names).toEqual(["alice", "bob"])
     expect(session.snapshot().peers[0]?.name).toBe("bob")
   })
 
@@ -971,6 +986,97 @@ describe("SendSession mutators", () => {
     expect(requests).toEqual([{ built: { nominate: false, localUsername: "local", remoteUsername: "remote", iceControlling: true } }])
   })
 
+  test("refreshPeerStats only probes ready peers", async () => {
+    const session = new SendSession({ room: "demo", reconnectSocket: false }) as any
+    const ready = readyPeer()
+    const notReady = { ...readyPeer(), id: "p2", dc: { readyState: "connecting" } }
+    const seen: string[] = []
+
+    session.peers.set("p1", ready)
+    session.peers.set("p2", notReady)
+    session.refreshPeerConnectivity = async (peer: any) => {
+      seen.push(peer.id)
+      return false
+    }
+
+    await session.refreshPeerStats()
+
+    expect(seen).toEqual(["p1"])
+  })
+
+  test("keeps the previous RTT when consent-probe drift is below the threshold", async () => {
+    const session = new SendSession({ room: "demo", reconnectSocket: false }) as any
+    const peer = readyPeer()
+    peer.connectivity = { rttMs: 10, localCandidateType: "host", remoteCandidateType: "relay", pathLabel: "Direct ↔ TURN" }
+    peer.pc = {
+      connectionState: "connected",
+      iceTransports: [{
+        state: "completed",
+        connection: {
+          localUsername: "local",
+          remoteUsername: "remote",
+          remotePassword: "pw",
+          iceControlling: true,
+          buildRequest: (input: unknown) => ({ built: input }),
+          nominated: {
+            remoteAddr: "127.0.0.1:3478",
+            localCandidate: { type: "host" },
+            remoteCandidate: { type: "relay" },
+            protocol: {
+              request: async () => {
+                await Bun.sleep(5)
+              },
+            },
+          },
+        },
+      }],
+    }
+    session.peers.set("p1", peer)
+
+    await session.refreshPeerStats()
+
+    const snapshot = session.snapshot().peers[0]
+    expect(snapshot.pathLabel).toBe("Direct ↔ TURN")
+    expect(snapshot.rttMs).toBe(10)
+  })
+
+  test("updates RTT when consent-probe drift crosses the threshold", async () => {
+    const session = new SendSession({ room: "demo", reconnectSocket: false }) as any
+    const peer = readyPeer()
+    peer.connectivity = { rttMs: 10, localCandidateType: "host", remoteCandidateType: "relay", pathLabel: "Direct ↔ TURN" }
+    peer.pc = {
+      connectionState: "connected",
+      iceTransports: [{
+        state: "completed",
+        connection: {
+          localUsername: "local",
+          remoteUsername: "remote",
+          remotePassword: "pw",
+          iceControlling: true,
+          buildRequest: (input: unknown) => ({ built: input }),
+          nominated: {
+            remoteAddr: "127.0.0.1:3478",
+            localCandidate: { type: "host" },
+            remoteCandidate: { type: "relay" },
+            protocol: {
+              request: async () => {
+                await Bun.sleep(40)
+              },
+            },
+          },
+        },
+      }],
+    }
+    session.peers.set("p1", peer)
+
+    await session.refreshPeerStats()
+
+    const snapshot = session.snapshot().peers[0]
+    expect(snapshot.pathLabel).toBe("Direct ↔ TURN")
+    expect(snapshot.rttMs > 25).toBe(true)
+    expect(snapshot.rttMs === 10).toBe(false)
+  })
+
   test("derives local TURN usage from active relay connectivity", () => {
     const session = new SendSession({ room: "demo", turnUrls: ["turn:turn.example.com:3478"], reconnectSocket: false }) as any
     const peer = readyPeer()
@@ -1054,6 +1160,37 @@ describe("SendSession mutators", () => {
       expect(session.snapshot().pulse.state).toBe("error")
       expect(session.snapshot().pulse.lastSettledState).toBe("error")
       expect(session.snapshot().pulse.error).toContain("pulse down")
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  test("does not flip pulse back to checking after a settled result", async () => {
+    const session = new SendSession({ room: "demo", reconnectSocket: false }) as any
+    const originalFetch = globalThis.fetch
+    const states: string[] = []
+    session.subscribe(() => {
+      states.push(session.snapshot().pulse.state)
+    })
+    try {
+      globalThis.fetch = (async () => new Response("ok")) as typeof fetch
+      await session.probePulse()
+
+      states.length = 0
+      let resolveFetch!: (response: Response) => void
+      const deferred = new Promise<Response>(resolve => {
+        resolveFetch = resolve
+      })
+      globalThis.fetch = (((_input: string | URL | Request) => deferred) as unknown) as typeof fetch
+
+      const pending = session.probePulse()
+      expect(session.snapshot().pulse.state).toBe("open")
+      expect(states).toEqual([])
+      resolveFetch(new Response("ok"))
+      await pending
+      await Bun.sleep(0)
+
+      expect(states).toEqual(["open"])
     } finally {
       globalThis.fetch = originalFetch
     }
@@ -1192,6 +1329,41 @@ describe("SendSession mutators", () => {
       expect(session.snapshot().logs.length).toBe(0)
     } finally {
       globalThis.fetch = originalFetch
+    }
+  })
+
+  test("throttles transfer progress notifications", async () => {
+    const session = new SendSession({ room: "demo", reconnectSocket: false }) as any
+    const peer = readyPeer()
+    const transfer = incomingTransfer({ id: "t1", status: "receiving", size: 10, bytes: 0 })
+    const originalNow = Date.now
+    let now = 1_000
+    let notifications = 0
+
+    Date.now = () => now
+    peer.activeIncoming = "t1"
+    session.peers.set("p1", peer)
+    session.transfers.set("t1", transfer)
+    session.subscribe(() => {
+      notifications += 1
+    })
+
+    try {
+      session.onBinary(peer, Buffer.from("a"))
+      await Bun.sleep(0)
+      expect(notifications).toBe(1)
+
+      now += 50
+      session.onBinary(peer, Buffer.from("b"))
+      await Bun.sleep(0)
+      expect(notifications).toBe(1)
+
+      now += 75
+      session.onBinary(peer, Buffer.from("c"))
+      await Bun.sleep(0)
+      expect(notifications).toBe(2)
+    } finally {
+      Date.now = originalNow
     }
   })
 })

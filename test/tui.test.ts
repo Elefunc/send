@@ -8,7 +8,7 @@ import type { LogEntry } from "../src/core/protocol"
 import { fallbackName } from "../src/core/protocol"
 
 const { createTestRenderer, rgb, ui } = reziCore
-const { aboutCliCommand, aboutWebLabel, aboutWebUrl, buildOsc52ClipboardSequence, canAcceptFilePreviewWithRight, canNavigateDraftHistory, clampFilePreviewSelectedIndex, consumeSatisfiedFocusRequest, createInitialTuiState, createNoopTuiActions, createQuitController, deriveBootFocusState, ensureFilePreviewScrollTop, externalOpenCommand, filePreviewVisible, formatLogsForCopy, groupTransfersByPeer, inviteCliText, inviteCopyUrl, inviteWebLabel, isDraftHistoryEntryPoint, isEditableFocusId, moveDraftHistory, moveFilePreviewSelection, previewPathSegments, previewSegmentStyle, pushDraftHistoryEntry, renderTuiView, renderedReadySelectedPeers, resolveLaunchDrafts, resolveWebUrlBase, resumeCliCommand, resumeOutputLines, resumeWebUrl, scheduleBootNameJump, shouldSwallowQQuit, statusToneVariant, transferSummaryStats, visiblePanes, webInviteUrl, withAcceptedDraftInput } = tuiRuntime
+const { TUI_NODE_APP_CONFIG, aboutCliCommand, aboutWebLabel, aboutWebUrl, buildOsc52ClipboardSequence, canAcceptFilePreviewWithRight, canNavigateDraftHistory, clampFilePreviewSelectedIndex, consumeSatisfiedFocusRequest, createInitialTuiState, createNoopTuiActions, createQuitController, deriveBootFocusState, ensureFilePreviewScrollTop, externalOpenCommand, filePreviewVisible, formatLogsForCopy, groupTransfersByPeer, inviteCliText, inviteCopyUrl, inviteWebLabel, isDraftHistoryEntryPoint, isEditableFocusId, moveDraftHistory, moveFilePreviewSelection, previewPathSegments, previewSegmentStyle, pushDraftHistoryEntry, renderTuiView, renderedReadySelectedPeers, resolveLaunchDrafts, resolveWebUrlBase, resumeCliCommand, resumeOutputLines, resumeWebUrl, scheduleBootNameJump, shouldSwallowQQuit, statusToneVariant, transferSummaryStats, visiblePanes, webInviteUrl, withAcceptedDraftInput } = tuiRuntime
 
 const createWideRenderer = () => createTestRenderer({ viewport: { cols: 180, rows: 60 } })
 const hasRenderedText = (view: ReturnType<ReturnType<typeof createWideRenderer>["render"]>, value: string) =>
@@ -46,6 +46,14 @@ describe("TUI pane visibility", () => {
 
   test("shows the logs pane when events are enabled", () => {
     expect(visiblePanes(true)).toEqual(["peers", "transfers", "logs"])
+  })
+
+  test("pins the TUI Rezi backend config to inline mode at 30 fps", () => {
+    expect(TUI_NODE_APP_CONFIG).toEqual({
+      executionMode: "inline",
+      fpsCap: 30,
+      idlePollMs: 50,
+    })
   })
 })
 

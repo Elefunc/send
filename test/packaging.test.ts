@@ -6,10 +6,14 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 
-const walkTsFiles = (root: string): string[] =>
+const walkSourceFiles = (root: string): string[] =>
   readdirSync(root, { withFileTypes: true }).flatMap(entry => {
     const path = join(root, entry.name)
-    return entry.isDirectory() ? walkTsFiles(path) : entry.isFile() && path.endsWith(".ts") ? [path] : []
+    return entry.isDirectory()
+      ? walkSourceFiles(path)
+      : entry.isFile() && (path.endsWith(".ts") || path.endsWith(".js"))
+        ? [path]
+        : []
   })
 
 const createInstalledPackageShape = () => {
@@ -34,7 +38,7 @@ const createInstalledPackageShape = () => {
 
 describe("packaged TUI imports", () => {
   test("shipped source never imports repo-local node_modules paths", () => {
-    for (const path of walkTsFiles(resolve(packageRoot, "src"))) {
+    for (const path of walkSourceFiles(resolve(packageRoot, "src"))) {
       expect(/(?:\.\.\/)+node_modules\//.test(readFileSync(path, "utf8"))).toBe(false)
     }
   })

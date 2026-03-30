@@ -84,6 +84,7 @@ interface TransferState {
   startedAt: number
   endedAt: number
   savedAt: number
+  lastProgressNotifiedAt: number
   savedPath?: string
   file?: LocalFile
   buffers?: Buffer[]
@@ -185,9 +186,11 @@ export interface SessionConfig {
 }
 
 const LOG_LIMIT = 200
-const STATS_POLL_MS = 1000
+const STATS_POLL_MS = 3000
 export const PULSE_PROBE_INTERVAL_MS = 15_000
 export const PULSE_STALE_MS = 45_000
+const RTT_CHANGE_THRESHOLD_MS = 25
+const TRANSFER_PROGRESS_NOTIFY_MS = 125
 const PROFILE_URL = "https://ip.rt.ht/"
 export interface PeerConnectivitySnapshot {
   rttMs: number
@@ -394,8 +397,16 @@ export const probeIcePairConsentRtt = async (connection: Record<string, any> | n
   return performance.now() - startedAt
 }
 
+const hasMeaningfulRttChange = (left: number, right: number) => {
+  const leftFinite = Number.isFinite(left)
+  const rightFinite = Number.isFinite(right)
+  if (leftFinite !== rightFinite) return true
+  if (!leftFinite && !rightFinite) return false
+  return Math.abs(left - right) >= RTT_CHANGE_THRESHOLD_MS
+}
+
 const sameConnectivity = (left: PeerConnectivitySnapshot, right: PeerConnectivitySnapshot) =>
-  (left.rttMs === right.rttMs || Number.isNaN(left.rttMs) && Number.isNaN(right.rttMs))
+  !hasMeaningfulRttChange(left.rttMs, right.rttMs)
   && left.localCandidateType === right.localCandidateType
   && left.remoteCandidateType === right.remoteCandidateType
   && left.pathLabel === right.pathLabel
@@ -466,6 +477,9 @@ export class SendSession {
   private pulseTimer: ReturnType<typeof setInterval> | null = null
   private readonly pendingRtcCloses = new Set<Promise<void>>()
   private lifecycleAbortController: AbortController | null = null
+  private notifyQueued = false
+  private peerStatsRefreshInFlight = false
+  private peerStatsRefreshQueued = false
   private stopped = false
 
   constructor(config: SessionConfig) {
@@ -530,6 +544,7 @@ export class SendSession {
     this.stopped = true
     this.stopPeerStatsPolling()
     this.stopPulsePolling()
+    this.peerStatsRefreshQueued = false
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer)
     this.reconnectTimer = null
     this.lifecycleAbortController?.abort()
@@ -1006,7 +1021,12 @@ export class SendSession {
   }
 
   private notify() {
-    for (const listener of this.subscribers) listener()
+    if (this.notifyQueued) return
+    this.notifyQueued = true
+    queueMicrotask(() => {
+      this.notifyQueued = false
+      for (const listener of this.subscribers) listener()
+    })
   }
 
   private emit(event: SessionEvent) {
@@ -1015,7 +1035,7 @@ export class SendSession {
 
   private startPeerStatsPolling() {
     if (this.peerStatsTimer) return
-    this.peerStatsTimer = setInterval(() => void this.refreshPeerStats(), STATS_POLL_MS)
+    this.peerStatsTimer = setInterval(() => this.schedulePeerStatsRefresh(), STATS_POLL_MS)
   }
 
   private stopPeerStatsPolling() {
@@ -1039,17 +1059,32 @@ export class SendSession {
     if (this.stopped) return
     let dirty = false
     for (const peer of this.peers.values()) {
-      if (peer.presence !== "active") continue
+      if (!this.isPeerReady(peer)) continue
       dirty = await this.refreshPeerConnectivity(peer) || dirty
     }
     if (dirty) this.notify()
+  }
+
+  private schedulePeerStatsRefresh() {
+    if (this.stopped) return
+    if (this.peerStatsRefreshInFlight) {
+      this.peerStatsRefreshQueued = true
+      return
+    }
+    this.peerStatsRefreshInFlight = true
+    void this.refreshPeerStats().finally(() => {
+      this.peerStatsRefreshInFlight = false
+      if (!this.peerStatsRefreshQueued) return
+      this.peerStatsRefreshQueued = false
+      this.schedulePeerStatsRefresh()
+    })
   }
 
   private async refreshPeerConnectivity(peer: PeerState) {
     const activePair = activeIcePairFromPeerConnection(peer.pc as { iceTransports?: unknown[] } | null | undefined)
     const next = connectivitySnapshotFromPeerConnection(peer.pc as { iceTransports?: unknown[] } | null | undefined, peer.connectivity)
     const rttMs = await probeIcePairConsentRtt(activePair?.connection, activePair?.pair).catch(() => Number.NaN)
-    if (Number.isFinite(rttMs)) next.rttMs = rttMs
+    next.rttMs = rttMs
     if (sameConnectivity(peer.connectivity, next)) return false
     peer.connectivity = next
     this.emit({ type: "peer", peer: this.peerSnapshot(peer) })
@@ -1146,6 +1181,12 @@ export class SendSession {
     transfer.eta = transfer.speed ? Math.max(0, (transfer.size - transfer.bytes) / transfer.speed) : Infinity
   }
 
+  private notifyTransferProgress(transfer: TransferState, now = Date.now()) {
+    if (transfer.lastProgressNotifiedAt && now - transfer.lastProgressNotifiedAt < TRANSFER_PROGRESS_NOTIFY_MS && transfer.bytes < transfer.size) return
+    transfer.lastProgressNotifiedAt = now
+    this.notify()
+  }
+
   private completeTransfer(transfer: TransferState, status: TransferStatus, error = "") {
     transfer.status = status
     transfer.error = error
@@ -1233,8 +1274,11 @@ export class SendSession {
 
   private async probePulse() {
     const startedAt = performance.now()
-    this.pulse = { ...this.pulse, state: "checking", error: "" }
-    this.notify()
+    const shouldNotifyChecking = this.pulse.lastSettledState === "idle"
+    if (shouldNotifyChecking) {
+      this.pulse = { ...this.pulse, state: "checking", error: "" }
+      this.notify()
+    }
     try {
       const response = await fetchWithTimeout(SIGNAL_PULSE_URL, { cache: "no-store" }, 3500, this.lifecycleAbortController?.signal)
       if (!response.ok) throw new Error(`pulse ${response.status}`)
@@ -1432,14 +1476,14 @@ export class SendSession {
         peer.lastError ||= pc.connectionState
         this.failPeerTransfers(peer, pc.connectionState)
       }
-      if (pc.connectionState === "connected") void this.refreshPeerStats()
+      if (pc.connectionState === "connected") this.schedulePeerStatsRefresh()
       this.emit({ type: "peer", peer: this.peerSnapshot(peer) })
       this.notify()
     }
     pc.oniceconnectionstatechange = () => {
       if (peer.rtcEpoch !== epoch) return
       peer.lastSeenAt = Date.now()
-      if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") void this.refreshPeerStats()
+      if (pc.iceConnectionState === "connected" || pc.iceConnectionState === "completed") this.schedulePeerStatsRefresh()
       this.emit({ type: "peer", peer: this.peerSnapshot(peer) })
       this.notify()
     }
@@ -1461,7 +1505,7 @@ export class SendSession {
       this.pushLog("dc:open", { peer: peer.id, rtcEpoch: epoch })
       this.flushOffers(peer)
       this.pumpSender(peer)
-      void this.refreshPeerStats()
+      this.schedulePeerStatsRefresh()
       this.emit({ type: "peer", peer: this.peerSnapshot(peer) })
       this.notify()
     }
@@ -1636,6 +1680,7 @@ export class SendSession {
       startedAt: 0,
       endedAt: 0,
       savedAt: 0,
+      lastProgressNotifiedAt: 0,
       file,
       inFlight: false,
       cancel: false,
@@ -1707,7 +1752,7 @@ export class SendSession {
         transfer.bytes += chunk.byteLength
         transfer.chunks += 1
         this.noteTransfer(transfer)
-        this.notify()
+        this.notifyTransferProgress(transfer)
       }
       this.assertSendAttempt(peer, transfer, channel, rtcEpoch)
       transfer.status = "awaiting-done"
@@ -1750,7 +1795,7 @@ export class SendSession {
     transfer.bytes += data.byteLength
     transfer.chunks += 1
     this.noteTransfer(transfer)
-    this.notify()
+    this.notifyTransferProgress(transfer)
   }
 
   private async handleTransferControl(peer: PeerState, message: DataMessage) {
@@ -1781,6 +1826,7 @@ export class SendSession {
             startedAt: 0,
             endedAt: 0,
             savedAt: 0,
+            lastProgressNotifiedAt: 0,
             buffers: [],
             inFlight: false,
             cancel: false,
