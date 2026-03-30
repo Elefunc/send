@@ -1,7 +1,7 @@
 import { resolve } from "node:path"
 import { BACKEND_RAW_WRITE_MARKER, rgb, ui, type BackendRawWrite, type BadgeVariant, type TextStyle, type UiEvent, type VNode } from "@rezi-ui/core"
 import { createNodeApp } from "@rezi-ui/node"
-import { inspectLocalFile } from "../core/files"
+import { inspectLocalFile, inspectLocalPaths } from "../core/files"
 import {
   DEFAULT_WEB_URL,
   inviteCliCommand as formatInviteCliCommand,
@@ -59,7 +59,7 @@ type DenseSectionOptions = {
   border?: "rounded" | "single" | "none"
   flex?: number
 }
-type TuiLaunchOptions = { events?: boolean; clean?: boolean; offer?: boolean }
+type TuiLaunchOptions = { events?: boolean; clean?: boolean; offer?: boolean; draftPaths?: readonly string[] }
 
 export type VisiblePane = "peers" | "transfers" | "logs"
 
@@ -1138,6 +1138,7 @@ const transferPathLabel = (transfer: TransferSnapshot, peersById: Map<string, Pe
 const renderTransferRow = (transfer: TransferSnapshot, peersById: Map<string, PeerSnapshot>, actions: TuiActions, now = Date.now()) => {
   const hasStarted = !!transfer.startedAt
   const directionArrow = TRANSFER_DIRECTION_ARROW[transfer.direction]
+  const actionButtons = transferActionButtons(transfer, actions)
   const facts = [
     renderTransferFact("Size", formatBytes(transfer.size)),
     renderTransferFact("Path", transferPathLabel(transfer, peersById)),
@@ -1151,22 +1152,30 @@ const renderTransferRow = (transfer: TransferSnapshot, peersById: Map<string, Pe
   return denseSection({
     key: transfer.id,
     titleNode: ui.row({ id: `transfer-title-row-${transfer.id}`, gap: 1, items: "center", wrap: true }, [
-      ui.row({ id: `transfer-title-main-${transfer.id}`, gap: 0, items: "center", wrap: true }, [
-        ui.text(directionArrow.glyph, { style: directionArrow.style }),
-        ui.text(` ${transfer.name}`, { variant: "heading" }),
+      ui.box({ id: `transfer-title-main-slot-${transfer.id}`, flex: 1, minWidth: 0, border: "none" }, [
+        ui.row({ id: `transfer-title-main-${transfer.id}`, gap: 0, items: "center", wrap: true }, [
+          ui.text(directionArrow.glyph, { style: directionArrow.style }),
+          ui.text(` ${transfer.name}`, { variant: "heading" }),
+        ]),
       ]),
       ui.row({ id: `transfer-badges-${transfer.id}`, gap: 1, items: "center", wrap: true }, [
         ui.status(transferStatusKind(transfer.status), { label: transfer.status, showLabel: true }),
         transfer.error ? tightTag("error", { variant: "error", bare: true }) : null,
       ]),
     ]),
-    actions: transferActionButtons(transfer, actions),
   }, [
     ui.row({ gap: 0, wrap: true }, facts),
     ui.progress(transferProgress(transfer), { showPercent: true, label: `${percentFormat.format(transfer.progress)}%` }),
-    ui.row({ gap: 0, wrap: true }, [
-      renderTransferFact("Speed", hasStarted ? transfer.speedText : "—"),
-      renderTransferFact("ETA", transfer.status === "sending" || transfer.status === "receiving" ? transfer.etaText : "—"),
+    ui.row({ id: `transfer-footer-row-${transfer.id}`, gap: 1, items: "center", wrap: true }, [
+      ui.box({ id: `transfer-live-slot-${transfer.id}`, flex: 1, minWidth: 0, border: "none" }, [
+        ui.row({ id: `transfer-live-row-${transfer.id}`, gap: 0, wrap: true }, [
+          renderTransferFact("Speed", hasStarted ? transfer.speedText : "—"),
+          renderTransferFact("ETA", transfer.status === "sending" || transfer.status === "receiving" ? transfer.etaText : "—"),
+        ]),
+      ]),
+      actionButtons.length
+        ? ui.row({ id: `transfer-actions-${transfer.id}`, gap: 1, items: "center", wrap: true }, actionButtons)
+        : null,
     ]),
     transfer.error ? ui.callout(transfer.error, { variant: "error" }) : null,
   ])
@@ -1344,9 +1353,45 @@ export const withAcceptedDraftInput = (state: TuiState, draftInput: string, file
     focusRequestEpoch: state.focusRequestEpoch + 1,
   }, notice)
 
+export const resolveLaunchDrafts = async (paths: readonly string[]) => {
+  const draftPaths = paths.map(path => `${path}`.trim()).filter(Boolean)
+  if (!draftPaths.length) return { drafts: [] as DraftItem[], notice: null as Notice | null }
+  const { files, errors } = await inspectLocalPaths(draftPaths)
+  const createdAt = Date.now()
+  const drafts = files.map((file, index) => ({
+    id: uid(10),
+    path: file.path,
+    name: file.name,
+    size: file.size,
+    createdAt: createdAt + index,
+  }))
+  if (!drafts.length) {
+    return {
+      drafts,
+      notice: { text: `Skipped ${plural(errors.length, "invalid path")}.`, variant: "error" } satisfies Notice,
+    }
+  }
+  if (errors.length) {
+    return {
+      drafts,
+      notice: { text: `Added ${plural(drafts.length, "draft file")} · skipped ${plural(errors.length, "invalid path")}.`, variant: "warning" } satisfies Notice,
+    }
+  }
+  return {
+    drafts,
+    notice: { text: `Added ${plural(drafts.length, "draft file")}.`, variant: "success" } satisfies Notice,
+  }
+}
+
 export const startTui = async (initialConfig: SessionConfig, launchOptions: TuiLaunchOptions = {}) => {
   await installCheckboxClickPatch()
-  const initialState = createInitialTuiState(initialConfig, !!launchOptions.events, launchOptions)
+  const launchDrafts = await resolveLaunchDrafts(launchOptions.draftPaths ?? [])
+  const baseInitialState = createInitialTuiState(initialConfig, !!launchOptions.events, launchOptions)
+  const initialState = {
+    ...baseInitialState,
+    drafts: launchDrafts.drafts.length ? launchDrafts.drafts : baseInitialState.drafts,
+    notice: launchDrafts.notice ?? baseInitialState.notice,
+  }
   const app = createNodeApp<TuiState>({ initialState })
   const quitController = createQuitController()
   let state = initialState

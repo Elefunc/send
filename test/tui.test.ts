@@ -1,12 +1,14 @@
 import { describe, expect, test } from "bun:test"
 import { EventEmitter } from "node:events"
+import { mkdir, rm } from "node:fs/promises"
+import { join } from "node:path"
 import { tuiRuntime, reziCore } from "./runtime"
 import type { PeerSnapshot, TransferSnapshot } from "../src/core/session"
 import type { LogEntry } from "../src/core/protocol"
 import { fallbackName } from "../src/core/protocol"
 
 const { createTestRenderer, rgb, ui } = reziCore
-const { aboutCliCommand, aboutWebLabel, aboutWebUrl, buildOsc52ClipboardSequence, canAcceptFilePreviewWithRight, canNavigateDraftHistory, clampFilePreviewSelectedIndex, consumeSatisfiedFocusRequest, createInitialTuiState, createNoopTuiActions, createQuitController, deriveBootFocusState, ensureFilePreviewScrollTop, externalOpenCommand, filePreviewVisible, formatLogsForCopy, groupTransfersByPeer, inviteCliText, inviteCopyUrl, inviteWebLabel, isDraftHistoryEntryPoint, isEditableFocusId, moveDraftHistory, moveFilePreviewSelection, previewPathSegments, previewSegmentStyle, pushDraftHistoryEntry, renderTuiView, renderedReadySelectedPeers, resolveWebUrlBase, resumeCliCommand, resumeOutputLines, resumeWebUrl, scheduleBootNameJump, shouldSwallowQQuit, statusToneVariant, transferSummaryStats, visiblePanes, webInviteUrl, withAcceptedDraftInput } = tuiRuntime
+const { aboutCliCommand, aboutWebLabel, aboutWebUrl, buildOsc52ClipboardSequence, canAcceptFilePreviewWithRight, canNavigateDraftHistory, clampFilePreviewSelectedIndex, consumeSatisfiedFocusRequest, createInitialTuiState, createNoopTuiActions, createQuitController, deriveBootFocusState, ensureFilePreviewScrollTop, externalOpenCommand, filePreviewVisible, formatLogsForCopy, groupTransfersByPeer, inviteCliText, inviteCopyUrl, inviteWebLabel, isDraftHistoryEntryPoint, isEditableFocusId, moveDraftHistory, moveFilePreviewSelection, previewPathSegments, previewSegmentStyle, pushDraftHistoryEntry, renderTuiView, renderedReadySelectedPeers, resolveLaunchDrafts, resolveWebUrlBase, resumeCliCommand, resumeOutputLines, resumeWebUrl, scheduleBootNameJump, shouldSwallowQQuit, statusToneVariant, transferSummaryStats, visiblePanes, webInviteUrl, withAcceptedDraftInput } = tuiRuntime
 
 const createWideRenderer = () => createTestRenderer({ viewport: { cols: 180, rows: 60 } })
 const hasRenderedText = (view: ReturnType<ReturnType<typeof createWideRenderer>["render"]>, value: string) =>
@@ -656,6 +658,40 @@ describe("TUI view", () => {
     expect(view.findText("Enter file paths above and press Add.")).toBe(null)
     expect(view.findText("Add draft paths here. Offer auto-sends drafts to selected ready peers when enabled.")).toBe(null)
     expect(view.findText("No draft paths")).toBe(null)
+  })
+
+  test("resolves launch draft paths into startup drafts and notices", async () => {
+    const dir = join(process.cwd(), ".tmp-send-tui-launch-drafts")
+    await rm(dir, { recursive: true, force: true })
+    await mkdir(dir, { recursive: true })
+    const first = join(dir, "one.txt")
+    const second = join(dir, "two.txt")
+    const folder = join(dir, "nested")
+    const missing = join(dir, "missing.txt")
+    await Bun.write(first, "one")
+    await Bun.write(second, "hello")
+    await mkdir(folder, { recursive: true })
+
+    try {
+      const success = await resolveLaunchDrafts([first, second])
+      expect(success.drafts.map(draft => [draft.path, draft.name, draft.size])).toEqual([
+        [first, "one.txt", 3],
+        [second, "two.txt", 5],
+      ])
+      expect(success.notice).toEqual({ text: "Added 2 draft files.", variant: "success" })
+
+      const mixed = await resolveLaunchDrafts([first, folder, missing])
+      expect(mixed.drafts.map(draft => [draft.path, draft.name, draft.size])).toEqual([
+        [first, "one.txt", 3],
+      ])
+      expect(mixed.notice).toEqual({ text: "Added 1 draft file · skipped 2 invalid paths.", variant: "warning" })
+
+      const failed = await resolveLaunchDrafts([folder, missing])
+      expect(failed.drafts).toEqual([])
+      expect(failed.notice).toEqual({ text: "Skipped 2 invalid paths.", variant: "error" })
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 
   test("renders a file preview popup under the Files input when focused", () => {
@@ -1712,6 +1748,8 @@ describe("TUI view", () => {
     const incomingName = view.nodes.find(node => node.kind === "text" && node.text === " two.txt")
     const outgoingTitleRow = view.findById("transfer-title-row-t1")
     const incomingTitleRow = view.findById("transfer-title-row-t2")
+    const outgoingTitleMain = view.findById("transfer-title-main-t1")
+    const incomingTitleMain = view.findById("transfer-title-main-t2")
     const outgoingBadges = view.findById("transfer-badges-t1")
     const incomingBadges = view.findById("transfer-badges-t2")
     const outgoingStatus = view.nodes.find(node => node.kind === "status" && "label" in node.props && node.props.label === "complete")
@@ -1719,8 +1757,8 @@ describe("TUI view", () => {
     const incomingErrorTag = view.nodes.find(node => node.kind === "text" && node.text === "error")
     expect(outgoingArrow === undefined || incomingArrow === undefined).toBe(false)
     expect(outgoingName === undefined || incomingName === undefined).toBe(false)
-    expect(outgoingTitleRow === null || incomingTitleRow === null || outgoingBadges === null || incomingBadges === null || outgoingStatus === undefined || incomingStatus === undefined || incomingErrorTag === undefined).toBe(false)
-    if (!outgoingArrow || !incomingArrow || !outgoingName || !incomingName || !outgoingTitleRow || !incomingTitleRow || !outgoingBadges || !incomingBadges || !outgoingStatus || !incomingStatus || !incomingErrorTag) throw new Error("missing transfer title nodes")
+    expect(outgoingTitleRow === null || incomingTitleRow === null || outgoingTitleMain === null || incomingTitleMain === null || outgoingBadges === null || incomingBadges === null || outgoingStatus === undefined || incomingStatus === undefined || incomingErrorTag === undefined).toBe(false)
+    if (!outgoingArrow || !incomingArrow || !outgoingName || !incomingName || !outgoingTitleRow || !incomingTitleRow || !outgoingTitleMain || !incomingTitleMain || !outgoingBadges || !incomingBadges || !outgoingStatus || !incomingStatus || !incomingErrorTag) throw new Error("missing transfer title nodes")
     expect(hasRenderedText(view, "→")).toBe(false)
     expect(hasRenderedText(view, "←")).toBe(false)
     expect(outgoingArrow.props.style).toEqual({ fg: rgb(170, 217, 76), bold: true })
@@ -1734,6 +1772,43 @@ describe("TUI view", () => {
     expect(outgoingStatus.rect.y).toBe(outgoingName.rect.y)
     expect(incomingStatus.rect.y).toBe(incomingName.rect.y)
     expect(incomingErrorTag.rect.y).toBe(incomingName.rect.y)
+    expect(outgoingBadges.rect.x > outgoingTitleMain.rect.x + outgoingTitleMain.rect.w).toBe(true)
+    expect(incomingBadges.rect.x > incomingTitleMain.rect.x + incomingTitleMain.rect.w).toBe(true)
+    expect(outgoingBadges.rect.x + outgoingBadges.rect.w === outgoingTitleRow.rect.x + outgoingTitleRow.rect.w).toBe(true)
+    expect(incomingBadges.rect.x + incomingBadges.rect.w === incomingTitleRow.rect.x + incomingTitleRow.rect.w).toBe(true)
+  })
+
+  test("renders per-transfer action buttons in the footer row instead of the title row", () => {
+    const renderer = createWideRenderer()
+    const state = createInitialTuiState({ room: "demo", reconnectSocket: false }, false)
+    state.snapshot = {
+      ...state.snapshot,
+      transfers: [
+        { id: "t1", peerId: "p1", peerName: "alice", direction: "in", status: "pending", name: "one.txt", size: 1024, bytes: 0, progress: 0, speedText: "—", etaText: "—", error: "", createdAt: 1, updatedAt: 1, startedAt: 0, endedAt: 0, savedAt: 0 },
+        { id: "t2", peerId: "p2", peerName: "bob", direction: "out", status: "sending", name: "two.txt", size: 2048, bytes: 1024, progress: 50, speedText: "1 KB/s", etaText: "2s", error: "", createdAt: 2, updatedAt: 3, startedAt: 3, endedAt: 0, savedAt: 0 },
+      ],
+    }
+    const view = renderer.render(renderTuiView(state, createNoopTuiActions()))
+    const pendingTitleRow = view.findById("transfer-title-row-t1")
+    const pendingLiveRow = view.findById("transfer-live-row-t1")
+    const pendingActions = view.findById("transfer-actions-t1")
+    const accept = view.findById("accept-t1")
+    const reject = view.findById("reject-t1")
+    const sendingTitleRow = view.findById("transfer-title-row-t2")
+    const sendingLiveRow = view.findById("transfer-live-row-t2")
+    const sendingActions = view.findById("transfer-actions-t2")
+    const cancel = view.findById("cancel-t2")
+    expect(pendingTitleRow === null || pendingLiveRow === null || pendingActions === null || accept === null || reject === null || sendingTitleRow === null || sendingLiveRow === null || sendingActions === null || cancel === null).toBe(false)
+    if (!pendingTitleRow || !pendingLiveRow || !pendingActions || !accept || !reject || !sendingTitleRow || !sendingLiveRow || !sendingActions || !cancel) throw new Error("missing transfer footer action nodes")
+    expect(pendingActions.rect.y >= pendingLiveRow.rect.y && pendingActions.rect.y < pendingLiveRow.rect.y + pendingLiveRow.rect.h).toBe(true)
+    expect(sendingActions.rect.y >= sendingLiveRow.rect.y && sendingActions.rect.y < sendingLiveRow.rect.y + sendingLiveRow.rect.h).toBe(true)
+    expect(accept.rect.y).toBe(pendingActions.rect.y)
+    expect(reject.rect.y).toBe(pendingActions.rect.y)
+    expect(cancel.rect.y).toBe(sendingActions.rect.y)
+    expect(pendingActions.rect.y > pendingTitleRow.rect.y).toBe(true)
+    expect(sendingActions.rect.y > sendingTitleRow.rect.y).toBe(true)
+    expect(pendingActions.rect.x > pendingLiveRow.rect.x + pendingLiveRow.rect.w).toBe(true)
+    expect(sendingActions.rect.x > sendingLiveRow.rect.x + sendingLiveRow.rect.w).toBe(true)
   })
 
   test("renders transfer facts inside the same dim-bordered boxes as peer metrics", () => {

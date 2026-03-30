@@ -26,6 +26,24 @@ Compile for a specific Bun target:
 bun run build:standalone -- --outfile /tmp/send --target bun-linux-x64
 ```
 
+Windows EXE targets now embed native Bun Windows metadata:
+
+- company/publisher: `Elefunc, Inc.`
+- product name: `rtme.sh`
+- product/file version: `package.json` version
+- description: `package.json` description
+- copyright: `Copyright (c) Elefunc, Inc.`
+- app icon: transparent Chromium-rendered `📤` capture from `assets/windows-app-icon.png` and `assets/windows-app-icon.ico`
+
+Windows EXE targets are built from WSL2 by jumping into native Windows Bun and are signed afterward with the local Trusted Signing stack.
+
+Prerequisites for Windows EXE targets:
+
+- run the build from WSL2
+- `bun.exe` available on Windows
+- `cs`, `sign.exe`, `az`, `powershell.exe`, `wslpath`, and `sha256sum` available
+- active Azure auth for Trusted Signing
+
 Compile all supported Bun standalone targets into `out/`:
 
 ```bash
@@ -125,9 +143,12 @@ Launches the Rezi-based terminal UI explicitly:
 
 ```bash
 bunx @elefunc/send@latest tui
+bunx @elefunc/send@latest tui ./file.txt ./other.txt
 bunx @elefunc/send@latest tui --events
 bunx @elefunc/send@latest tui --accept 0 --offer 0 --save 1
 ```
+
+Positional file paths are accepted here and preload the TUI draft list on startup. They still use normal TUI draft and auto-offer behavior rather than `offer` command targeting semantics.
 
 Important flags:
 
@@ -363,6 +384,11 @@ Operational implications:
 - first launch extracts a cached runtime under temp
 - later launches reuse the cached extracted tree for the same version/hash
 - binaries are large because they embed a production runtime tree
+- Windows builds are stamped with rtme.sh executable metadata
+- Windows builds are stamped with the Chromium-rendered `📤` Windows app icon
+- Windows builds are compiled through a WSL2-to-Windows bridge and then code-signed from WSL
+- `build:standalone_all` assumes WSL2 whenever the target matrix includes Windows executables
+- failed Windows signing removes the affected output artifacts instead of leaving unsigned `.exe` files behind
 
 ## Development and Validation
 

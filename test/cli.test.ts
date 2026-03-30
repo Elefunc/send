@@ -542,6 +542,7 @@ describe("CLI surface", () => {
     await withCliHelpEnv({ name: "send" }, async () => {
       await withStdoutTTY(false, async () => {
         const output = await captureConsole(() => runCli(["bun", "send", "tui", "--help"]))
+        expect(output).toContain("Usage:\n  $ send tui [...files]")
         expect(output).toContain("--room <room>              room id (default: <random>)")
         expect(output).toContain("--self <self>")
         expect(output).toContain("--clean <0|1>              show only active peers when 1; show terminal peers too when 0 (default: 1)")
@@ -577,6 +578,19 @@ describe("CLI surface", () => {
     const { calls, handlers } = createHandlerSpies()
     await runCli(["bun", "send", "tui"], handlers)
     expect(calls).toEqual([{ name: "tui", args: [{ "--": [] }] }])
+  })
+
+  test("tui command forwards positional file paths as draftPaths", async () => {
+    const { calls, handlers } = createHandlerSpies()
+    await runCli(["bun", "send", "tui", "a.txt", "b.txt", "--events"], handlers)
+    expect(calls).toEqual([{
+      name: "tui",
+      args: [{
+        "--": [],
+        draftPaths: ["a.txt", "b.txt"],
+        events: true,
+      }],
+    }])
   })
 
   test("peers command does not inject help defaults into omitted options", async () => {

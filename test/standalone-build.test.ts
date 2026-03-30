@@ -12,11 +12,36 @@ import {
   shouldIncludeRuntimePath,
 } from "../scripts/standalone-lib"
 import {
+  assertStandaloneAllHostSupported,
+  hasWindowsStandaloneTargets,
   standaloneCompileTargets,
   standaloneTargetToArtifactName,
   standaloneTargetToBasename,
 } from "../scripts/build-standalone-all"
-import { parseBuildArgs } from "../scripts/build-standalone"
+import {
+  assertWindowsIconAssetExists,
+  assertWindowsBuildHostSupported,
+  buildStandaloneCompileArgs,
+  getWindowsBuildMetadataArgs,
+  isInternalWindowsBridgeRun,
+  isWindowsCompileTarget,
+  isWsl2Host,
+  normalizeWindowsVersion,
+  parseBuildArgs,
+  renderWslWindowsBridgeScript,
+  standaloneArtifactPathFromOutfile,
+  WINDOWS_BRIDGE_ENV,
+  WINDOWS_ICON_PATH,
+} from "../scripts/build-standalone"
+
+const errorMessage = (action: () => unknown) => {
+  try {
+    action()
+    return ""
+  } catch (error) {
+    return error instanceof Error ? error.message : `${error}`
+  }
+}
 
 describe("standalone builder", () => {
   test("runtime path filter keeps only shipped runtime files", () => {
@@ -114,6 +139,118 @@ describe("standalone builder", () => {
     expect(options.target).toBe("bun-linux-x64")
   })
 
+  test("detects Windows builds from explicit targets and native Windows defaults", () => {
+    expect(isWindowsCompileTarget("bun-windows-x64", "linux")).toBe(true)
+    expect(isWindowsCompileTarget("bun-linux-x64", "win32")).toBe(false)
+    expect(isWindowsCompileTarget(undefined, "win32")).toBe(true)
+    expect(isWindowsCompileTarget(undefined, "linux")).toBe(false)
+  })
+
+  test("detects WSL2 hosts and the internal Windows bridge environment", () => {
+    expect(isWsl2Host("linux", { WSL_DISTRO_NAME: "Ubuntu", WSL_INTEROP: "/run/WSL/1" }, "Linux version 6.6.87.2-microsoft-standard-WSL2")).toBe(true)
+    expect(isWsl2Host("linux", {}, "Linux version 6.6.87.2-generic")).toBe(false)
+    expect(isInternalWindowsBridgeRun({ [WINDOWS_BRIDGE_ENV]: "1" })).toBe(true)
+    expect(isInternalWindowsBridgeRun({})).toBe(false)
+  })
+
+  test("allows Windows builds only from WSL2 or the internal Windows bridge", () => {
+    expect(errorMessage(() => assertWindowsBuildHostSupported(
+      "bun-windows-x64",
+      "linux",
+      { WSL_DISTRO_NAME: "Ubuntu", WSL_INTEROP: "/run/WSL/1" },
+      "Linux version 6.6.87.2-microsoft-standard-WSL2",
+    ))).toBe("")
+    expect(errorMessage(() => assertWindowsBuildHostSupported("bun-windows-x64", "win32", { [WINDOWS_BRIDGE_ENV]: "1" }))).toBe("")
+    expect(errorMessage(() => assertWindowsBuildHostSupported("bun-windows-x64", "linux", {}, "Linux version 6.6.87.2-generic")))
+      .toContain("require WSL2")
+    expect(errorMessage(() => assertWindowsBuildHostSupported("bun-windows-x64", "win32", {})))
+      .toContain("must be launched from WSL2")
+  })
+
+  test("validates Windows executable versions from package.json", () => {
+    expect(normalizeWindowsVersion("0.1.19")).toBe("0.1.19")
+    expect(normalizeWindowsVersion("1.2.3.4")).toBe("1.2.3.4")
+    expect(errorMessage(() => normalizeWindowsVersion("0.1.19-beta.1"))).toContain("package.json version must be a dotted numeric Windows version")
+  })
+
+  test("adds rtme.sh metadata flags for Windows targets", () => {
+    const args = getWindowsBuildMetadataArgs(
+      { description: "Browser-compatible file transfer CLI and TUI powered by Bun, WebRTC, and Rezi.", version: "0.1.19" },
+      "bun-windows-x64",
+      "win32",
+    )
+    expect(args).toEqual([
+      "--windows-title", "rtme.sh",
+      "--windows-publisher", "Elefunc, Inc.",
+      "--windows-version", "0.1.19",
+      "--windows-description", "Browser-compatible file transfer CLI and TUI powered by Bun, WebRTC, and Rezi.",
+      "--windows-copyright", "Copyright (c) Elefunc, Inc.",
+      "--windows-icon", WINDOWS_ICON_PATH,
+    ])
+  })
+
+  test("omits Windows metadata flags for non-Windows targets", () => {
+    expect(getWindowsBuildMetadataArgs({ description: "desc", version: "0.1.19" }, "bun-linux-x64", "linux")).toEqual([])
+  })
+
+  test("fails fast when the Windows icon asset is missing", () => {
+    expect(errorMessage(() => assertWindowsIconAssetExists("bun-windows-x64", "/tmp/missing-icon.ico", "win32")))
+      .toContain("Missing Windows icon asset")
+  })
+
+  test("refuses Windows metadata stamping on non-Windows hosts", () => {
+    expect(errorMessage(() => getWindowsBuildMetadataArgs({ description: "desc", version: "0.1.19" }, "bun-windows-x64", "linux")))
+      .toContain("Windows standalone builds must run on Windows")
+  })
+
+  test("fails Windows metadata assembly when the icon asset is missing", () => {
+    expect(errorMessage(() => getWindowsBuildMetadataArgs(
+      { description: "desc", version: "0.1.19" },
+      "bun-windows-x64",
+      "win32",
+      "/tmp/missing-icon.ico",
+    ))).toContain("Missing Windows icon asset")
+  })
+
+  test("treats omitted target on Windows as a Windows executable build", () => {
+    const args = buildStandaloneCompileArgs({
+      bootstrapPath: "/tmp/bootstrap.ts",
+      hostPlatform: "win32",
+      outfile: "/tmp/send",
+      packageJson: { description: "desc", version: "0.1.19" },
+    })
+    expect(args).toEqual([
+      "build", "--compile", "/tmp/bootstrap.ts", "--outfile", "/tmp/send",
+      "--windows-title", "rtme.sh",
+      "--windows-publisher", "Elefunc, Inc.",
+      "--windows-version", "0.1.19",
+      "--windows-description", "desc",
+      "--windows-copyright", "Copyright (c) Elefunc, Inc.",
+      "--windows-icon", WINDOWS_ICON_PATH,
+    ])
+  })
+
+  test("renders a PowerShell bridge script for WSL Windows builds", () => {
+    const script = renderWslWindowsBridgeScript({
+      keepTemp: true,
+      outfileWin: "C:\\temp\\send.exe",
+      packageRootWin: "C:\\repo\\cli",
+      skipSign: true,
+      target: "bun-windows-x64",
+    })
+    expect(script).toContain(`$env:${WINDOWS_BRIDGE_ENV} = '1'`)
+    expect(script).toContain(`$env:SEND_STANDALONE_SKIP_WINDOWS_SIGN = '1'`)
+    expect(script).toContain(`Set-Location 'C:\\repo\\cli'`)
+    expect(script).toContain(`'--outfile', 'C:\\temp\\send.exe'`)
+    expect(script).toContain(`'--target', 'bun-windows-x64'`)
+  })
+
+  test("derives the final standalone artifact path from the outfile", () => {
+    expect(standaloneArtifactPathFromOutfile("/tmp/send", "bun-windows-x64", "win32")).toBe("/tmp/send.exe")
+    expect(standaloneArtifactPathFromOutfile("/tmp/send.exe", "bun-windows-x64", "win32")).toBe("/tmp/send.exe")
+    expect(standaloneArtifactPathFromOutfile("/tmp/send", "bun-linux-x64", "linux")).toBe("/tmp/send")
+  })
+
   test("all-target builder locks the full Bun target matrix", () => {
     expect(standaloneCompileTargets).toEqual([
       "bun-darwin-x64",
@@ -145,5 +282,22 @@ describe("standalone builder", () => {
     expect(standaloneTargetToBasename("bun-windows-x64")).toBe("send-windows-x64")
     expect(standaloneTargetToArtifactName("bun-windows-x64")).toBe("send-windows-x64.exe")
     expect(standaloneTargetToArtifactName("bun-linux-arm64")).toBe("send-linux-arm64")
+  })
+
+  test("all-target builder detects Windows entries in the matrix", () => {
+    expect(hasWindowsStandaloneTargets(standaloneCompileTargets)).toBe(true)
+    expect(hasWindowsStandaloneTargets(["bun-linux-x64", "bun-darwin-arm64"])).toBe(false)
+  })
+
+  test("all-target builder refuses the mixed matrix on non-Windows hosts", () => {
+    expect(errorMessage(() => assertStandaloneAllHostSupported(
+      standaloneCompileTargets,
+      "linux",
+      { WSL_DISTRO_NAME: "Ubuntu", WSL_INTEROP: "/run/WSL/1" },
+      "Linux version 6.6.87.2-microsoft-standard-WSL2",
+    ))).toBe("")
+    expect(errorMessage(() => assertStandaloneAllHostSupported(standaloneCompileTargets, "linux", {}, "Linux version 6.6.87.2-generic")))
+      .toContain("expects to run from WSL2")
+    expect(errorMessage(() => assertStandaloneAllHostSupported(["bun-linux-x64"], "linux"))).toBe("")
   })
 })

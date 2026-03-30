@@ -1,6 +1,6 @@
 {
   "name": "@elefunc/send",
-  "version": "0.1.32",
+  "version": "0.1.33",
   "description": "Browser-compatible file transfer CLI and TUI powered by Bun, WebRTC, and Rezi.",
   "license": "MIT",
   "type": "module",
@@ -12,6 +12,7 @@
     "send": "./src/index.ts"
   },
   "files": [
+    "assets",
     "scripts",
     "src",
     "runtime",

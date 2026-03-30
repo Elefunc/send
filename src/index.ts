@@ -286,11 +286,13 @@ const acceptCommand = async (options: Record<string, unknown>) => {
 const tuiCommand = async (options: Record<string, unknown>) => {
   const initialConfig = sessionConfigFrom(options, ACCEPT_SESSION_DEFAULTS)
   const { clean, offer } = parseBinaryOptions(options, ["clean", "offer"] as const)
+  const draftPaths = toArray(options.draftPaths)
   const { startTui } = await loadTuiRuntime()
   await startTui(initialConfig, {
     events: !!options.events,
     clean: clean ?? true,
     offer: offer ?? true,
+    draftPaths,
   })
 }
 
@@ -350,14 +352,14 @@ export const createCli = (handlers: CliHandlers = defaultCliHandlers) => {
     ...TURN_OPTIONS,
   ])).action(options => handlers.accept(normalizeCliOptions(options)))
 
-  withTrailingHelpLine(addOptions(cli.command("tui", "launch the interactive terminal UI").ignoreOptionDefaultValue(), [
+  withTrailingHelpLine(addOptions(cli.command("tui [...files]", "launch the interactive terminal UI").ignoreOptionDefaultValue(), [
     ...ROOM_SELF_OPTIONS,
     ...TUI_TOGGLE_OPTIONS,
     ["--events", "show the event log pane"],
     SAVE_DIR_OPTION,
     OVERWRITE_OPTION,
     ...TURN_OPTIONS,
-  ])).action(options => handlers.tui(normalizeCliOptions(options)))
+  ])).action((files, options) => handlers.tui(normalizeCliOptions(files.length ? { ...options, draftPaths: files } : options)))
 
   cli.help(sections => {
     const usage = sections.find(section => section.title === "Usage:")
