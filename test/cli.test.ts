@@ -545,7 +545,7 @@ describe("CLI surface", () => {
         expect(output).toContain("Usage:\n  $ send tui [...files]")
         expect(output).toContain("--room <room>              room id (default: <random>)")
         expect(output).toContain("--self <self>")
-        expect(output).toContain("--clean <0|1>              show only active peers when 1; show terminal peers too when 0 (default: 1)")
+        expect(output).toContain("--clean <0|1>              show only connected peers when 1; show all peers when 0 (default: 1)")
         expect(output).toContain("--accept <0|1>             auto-accept incoming offers: 1 on, 0 off (default: 1)")
         expect(output).toContain("--offer <0|1>              auto-offer drafts to matching ready peers: 1 on, 0 off (default: 1)")
         expect(output).toContain("--save <0|1>               auto-save completed incoming files: 1 on, 0 off (default: 1)")

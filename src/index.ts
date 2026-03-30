@@ -71,7 +71,7 @@ const TURN_OPTIONS = [
 const OVERWRITE_OPTION = ["-o, --overwrite", "overwrite same-name saved files instead of creating copies"] as const
 const SAVE_DIR_OPTION = ["--save-dir <dir>", "save directory", { default: "." }] as const
 const TUI_TOGGLE_OPTIONS = [
-  ["--clean <0|1>", "show only active peers when 1; show terminal peers too when 0", { default: 1 }],
+  ["--clean <0|1>", "show only connected peers when 1; show all peers when 0", { default: 1 }],
   ["--accept <0|1>", "auto-accept incoming offers: 1 on, 0 off", { default: 1 }],
   ["--offer <0|1>", "auto-offer drafts to matching ready peers: 1 on, 0 off", { default: 1 }],
   ["--save <0|1>", "auto-save completed incoming files: 1 on, 0 off", { default: 1 }],

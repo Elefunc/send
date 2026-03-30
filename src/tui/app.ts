@@ -349,7 +349,7 @@ const transferStatusKind = (status: TransferSnapshot["status"]) => ({
   cancelled: "offline",
   error: "offline",
 }[status] || "unknown") as "online" | "offline" | "away" | "busy" | "unknown"
-const visiblePeers = (peers: PeerSnapshot[], hideTerminalPeers: boolean) => hideTerminalPeers ? peers.filter(peer => peer.presence === "active") : peers
+const visiblePeers = (peers: PeerSnapshot[], hideTerminalPeers: boolean) => hideTerminalPeers ? peers.filter(peer => peer.status === "connected") : peers
 const peerSearchNeedle = (value: string) => `${value ?? ""}`.trim().toLowerCase()
 const peerMatchesSearch = (peer: PeerSnapshot, search: string) => !search || peer.displayName.toLowerCase().includes(search)
 export const renderedPeers = (peers: PeerSnapshot[], hideTerminalPeers: boolean, search: string) => {
@@ -1150,6 +1150,7 @@ const renderTransferRow = (transfer: TransferSnapshot, peersById: Map<string, Pe
   ].filter(Boolean) as VNode[]
 
   return denseSection({
+    id: `transfer-card-${transfer.id}`,
     key: transfer.id,
     titleNode: ui.row({ id: `transfer-title-row-${transfer.id}`, gap: 1, items: "center", wrap: true }, [
       ui.box({ id: `transfer-title-main-slot-${transfer.id}`, flex: 1, minWidth: 0, border: "none" }, [
@@ -1166,7 +1167,12 @@ const renderTransferRow = (transfer: TransferSnapshot, peersById: Map<string, Pe
   }, [
     ui.row({ gap: 0, wrap: true }, facts),
     ui.progress(transferProgress(transfer), { showPercent: true, label: `${percentFormat.format(transfer.progress)}%` }),
-    ui.row({ id: `transfer-footer-row-${transfer.id}`, gap: 1, items: "center", wrap: true }, [
+    transfer.error
+      ? ui.box({ id: `transfer-error-${transfer.id}`, border: "none" }, [
+          ui.callout(transfer.error, { variant: "error" }),
+        ])
+      : null,
+    ui.row({ id: `transfer-footer-row-${transfer.id}`, gap: 1, items: "end", wrap: true }, [
       ui.box({ id: `transfer-live-slot-${transfer.id}`, flex: 1, minWidth: 0, border: "none" }, [
         ui.row({ id: `transfer-live-row-${transfer.id}`, gap: 0, wrap: true }, [
           renderTransferFact("Speed", hasStarted ? transfer.speedText : "—"),
@@ -1174,10 +1180,9 @@ const renderTransferRow = (transfer: TransferSnapshot, peersById: Map<string, Pe
         ]),
       ]),
       actionButtons.length
-        ? ui.row({ id: `transfer-actions-${transfer.id}`, gap: 1, items: "center", wrap: true }, actionButtons)
+        ? ui.row({ id: `transfer-actions-${transfer.id}`, gap: 1, items: "end", wrap: true }, actionButtons)
         : null,
     ]),
-    transfer.error ? ui.callout(transfer.error, { variant: "error" }) : null,
   ])
 }
 
@@ -1822,7 +1827,7 @@ export const startTui = async (initialConfig: SessionConfig, launchOptions: TuiL
       for (const peer of peers) if (state.session.setPeerSelected(peer.id, false)) changed += 1
       commit(current => withNotice(current, { text: changed ? `Cleared ${plural(changed, "matching peer selection")}.` : "No matching peer selections to clear.", variant: changed ? "warning" : "info" }))
     },
-    toggleHideTerminalPeers: () => commit(current => withNotice({ ...current, hideTerminalPeers: !current.hideTerminalPeers }, { text: current.hideTerminalPeers ? "Terminal peers shown." : "Terminal peers hidden.", variant: "info" })),
+    toggleHideTerminalPeers: () => commit(current => withNotice({ ...current, hideTerminalPeers: !current.hideTerminalPeers }, { text: current.hideTerminalPeers ? "All peers shown." : "Only connected peers shown.", variant: "info" })),
     togglePeer: peerId => {
       state.session.togglePeerSelection(peerId)
       maybeOfferDrafts()

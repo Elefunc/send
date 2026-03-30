@@ -1323,6 +1323,7 @@ describe("TUI view", () => {
 
     unsubscribe()
 
+    state.hideTerminalPeers = false
     const view = renderer.render(renderTuiView(state, createNoopTuiActions()))
     expect(hasRenderedText(view, "aX")).toBe(true)
     expect(hasRenderedText(view, "(aX)")).toBe(false)
@@ -1539,6 +1540,7 @@ describe("TUI view", () => {
       ...state.snapshot,
       peers: [
         { id: "p2", name: "bob", displayName: "bob-p2", presence: "active", selected: true, selectable: true, ready: true, status: "connected", turn: "stun", turnState: "none", dataState: "open", lastError: "", rttMs: 0, localCandidateType: "", remoteCandidateType: "", pathLabel: "—" },
+        { id: "p3", name: "carol", displayName: "carol-p3", presence: "active", selected: true, selectable: true, ready: false, status: "new", turn: "stun", turnState: "none", dataState: "—", lastError: "", rttMs: 0, localCandidateType: "", remoteCandidateType: "", pathLabel: "—" },
         { id: "p1", name: "alice", displayName: "alice-p1", presence: "terminal", selected: true, selectable: false, ready: false, status: "left", turn: "stun", turnState: "none", dataState: "closed", lastError: "", rttMs: 0, localCandidateType: "", remoteCandidateType: "", pathLabel: "—" },
       ],
     }
@@ -1563,6 +1565,9 @@ describe("TUI view", () => {
     expect(countText.text).toBe("1/1")
     expect(shareAll.props.disabled).toBe(undefined)
     expect(shareAll.props.focusable).toBe(false)
+    expect(nonEmpty.findById("peer-row-p2") === null).toBe(false)
+    expect(nonEmpty.findById("peer-row-p3")).toBe(null)
+    expect(nonEmpty.findById("peer-row-p1")).toBe(null)
 
     state.peerSearch = "zzz"
     const filtered = renderer.render(renderTuiView(state, createNoopTuiActions()))
@@ -1778,7 +1783,7 @@ describe("TUI view", () => {
     expect(incomingBadges.rect.x + incomingBadges.rect.w === incomingTitleRow.rect.x + incomingTitleRow.rect.w).toBe(true)
   })
 
-  test("renders per-transfer action buttons in the footer row instead of the title row", () => {
+  test("anchors per-transfer action buttons to the bottom of the footer row instead of the title row", () => {
     const renderer = createWideRenderer()
     const state = createInitialTuiState({ room: "demo", reconnectSocket: false }, false)
     state.snapshot = {
@@ -1790,18 +1795,22 @@ describe("TUI view", () => {
     }
     const view = renderer.render(renderTuiView(state, createNoopTuiActions()))
     const pendingTitleRow = view.findById("transfer-title-row-t1")
+    const pendingFooterRow = view.findById("transfer-footer-row-t1")
     const pendingLiveRow = view.findById("transfer-live-row-t1")
     const pendingActions = view.findById("transfer-actions-t1")
     const accept = view.findById("accept-t1")
     const reject = view.findById("reject-t1")
     const sendingTitleRow = view.findById("transfer-title-row-t2")
+    const sendingFooterRow = view.findById("transfer-footer-row-t2")
     const sendingLiveRow = view.findById("transfer-live-row-t2")
     const sendingActions = view.findById("transfer-actions-t2")
     const cancel = view.findById("cancel-t2")
-    expect(pendingTitleRow === null || pendingLiveRow === null || pendingActions === null || accept === null || reject === null || sendingTitleRow === null || sendingLiveRow === null || sendingActions === null || cancel === null).toBe(false)
-    if (!pendingTitleRow || !pendingLiveRow || !pendingActions || !accept || !reject || !sendingTitleRow || !sendingLiveRow || !sendingActions || !cancel) throw new Error("missing transfer footer action nodes")
-    expect(pendingActions.rect.y >= pendingLiveRow.rect.y && pendingActions.rect.y < pendingLiveRow.rect.y + pendingLiveRow.rect.h).toBe(true)
-    expect(sendingActions.rect.y >= sendingLiveRow.rect.y && sendingActions.rect.y < sendingLiveRow.rect.y + sendingLiveRow.rect.h).toBe(true)
+    expect(pendingTitleRow === null || pendingFooterRow === null || pendingLiveRow === null || pendingActions === null || accept === null || reject === null || sendingTitleRow === null || sendingFooterRow === null || sendingLiveRow === null || sendingActions === null || cancel === null).toBe(false)
+    if (!pendingTitleRow || !pendingFooterRow || !pendingLiveRow || !pendingActions || !accept || !reject || !sendingTitleRow || !sendingFooterRow || !sendingLiveRow || !sendingActions || !cancel) throw new Error("missing transfer footer action nodes")
+    expect(pendingActions.rect.y + pendingActions.rect.h).toBe(pendingFooterRow.rect.y + pendingFooterRow.rect.h)
+    expect(sendingActions.rect.y + sendingActions.rect.h).toBe(sendingFooterRow.rect.y + sendingFooterRow.rect.h)
+    expect(pendingActions.rect.y + pendingActions.rect.h).toBe(pendingLiveRow.rect.y + pendingLiveRow.rect.h)
+    expect(sendingActions.rect.y + sendingActions.rect.h).toBe(sendingLiveRow.rect.y + sendingLiveRow.rect.h)
     expect(accept.rect.y).toBe(pendingActions.rect.y)
     expect(reject.rect.y).toBe(pendingActions.rect.y)
     expect(cancel.rect.y).toBe(sendingActions.rect.y)
@@ -1809,6 +1818,29 @@ describe("TUI view", () => {
     expect(sendingActions.rect.y > sendingTitleRow.rect.y).toBe(true)
     expect(pendingActions.rect.x > pendingLiveRow.rect.x + pendingLiveRow.rect.w).toBe(true)
     expect(sendingActions.rect.x > sendingLiveRow.rect.x + sendingLiveRow.rect.w).toBe(true)
+  })
+
+  test("renders transfer error callouts above the bottom-anchored footer actions", () => {
+    const renderer = createWideRenderer()
+    const state = createInitialTuiState({ room: "demo", reconnectSocket: false }, false)
+    state.snapshot = {
+      ...state.snapshot,
+      transfers: [
+        { id: "t1", peerId: "p1", peerName: "alice", direction: "out", status: "sending", name: "one.txt", size: 1024, bytes: 512, progress: 50, speedText: "1 KB/s", etaText: "1s", error: "network stalled", createdAt: 1, updatedAt: 2, startedAt: 2, endedAt: 0, savedAt: 0 },
+      ],
+    }
+    const view = renderer.render(renderTuiView(state, createNoopTuiActions()))
+    const card = view.findById("transfer-card-t1")
+    const errorBox = view.findById("transfer-error-t1")
+    const footerRow = view.findById("transfer-footer-row-t1")
+    const actionRow = view.findById("transfer-actions-t1")
+    const cancel = view.findById("cancel-t1")
+    expect(card === null || errorBox === null || footerRow === null || actionRow === null || cancel === null).toBe(false)
+    if (!card || !errorBox || !footerRow || !actionRow || !cancel) throw new Error("missing transfer error or footer nodes")
+    expect(errorBox.rect.y + errorBox.rect.h <= footerRow.rect.y).toBe(true)
+    expect(actionRow.rect.y + actionRow.rect.h).toBe(footerRow.rect.y + footerRow.rect.h)
+    expect(footerRow.rect.y + footerRow.rect.h <= card.rect.y + card.rect.h).toBe(true)
+    expect(cancel.rect.y).toBe(actionRow.rect.y)
   })
 
   test("renders transfer facts inside the same dim-bordered boxes as peer metrics", () => {
