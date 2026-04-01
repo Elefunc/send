@@ -14,12 +14,16 @@ describe("protocol cleaners", () => {
     expect(displayPeerName("Alice", "abc123")).toBe("alice-abc123")
   })
 
-  test("peerDefaultsToken encodes accept/save defaults and streaming capability", () => {
+  test("peerDefaultsToken encodes accept/save defaults, streaming capability, and overwrite state", () => {
     expect(peerDefaultsToken({ defaults: { autoAcceptIncoming: true, autoSaveIncoming: true }, streamingSaveIncoming: true })).toBe("AX")
     expect(peerDefaultsToken({ defaults: { autoAcceptIncoming: false, autoSaveIncoming: true }, streamingSaveIncoming: true })).toBe("aX")
+    expect(peerDefaultsToken({ defaults: { autoAcceptIncoming: true, autoSaveIncoming: true, overwriteIncoming: true }, streamingSaveIncoming: true })).toBe("AW")
+    expect(peerDefaultsToken({ defaults: { autoAcceptIncoming: false, autoSaveIncoming: true, overwriteIncoming: true }, streamingSaveIncoming: true })).toBe("aW")
     expect(peerDefaultsToken({ defaults: { autoAcceptIncoming: true, autoSaveIncoming: true }, streamingSaveIncoming: false })).toBe("AS")
     expect(peerDefaultsToken({ defaults: { autoAcceptIncoming: false, autoSaveIncoming: true } })).toBe("aS")
+    expect(peerDefaultsToken({ defaults: { autoAcceptIncoming: true, autoSaveIncoming: true, overwriteIncoming: true }, streamingSaveIncoming: false })).toBe("AS")
     expect(peerDefaultsToken({ defaults: { autoAcceptIncoming: true, autoSaveIncoming: false }, streamingSaveIncoming: true })).toBe("As")
+    expect(peerDefaultsToken({ defaults: { autoAcceptIncoming: true, autoSaveIncoming: false, overwriteIncoming: true }, streamingSaveIncoming: true })).toBe("As")
     expect(peerDefaultsToken({ defaults: { autoAcceptIncoming: false, autoSaveIncoming: false } })).toBe("as")
     expect(peerDefaultsToken()).toBe("??")
   })

@@ -55,6 +55,7 @@ export interface PeerProfile {
   defaults?: {
     autoAcceptIncoming?: boolean
     autoSaveIncoming?: boolean
+    overwriteIncoming?: boolean
   }
   streamingSaveIncoming?: boolean
   ready?: boolean
@@ -228,7 +229,7 @@ export const peerDefaultsToken = (profile?: PeerProfile) => {
   const autoAcceptIncoming = typeof profile?.defaults?.autoAcceptIncoming === "boolean" ? profile.defaults.autoAcceptIncoming : null
   const autoSaveIncoming = typeof profile?.defaults?.autoSaveIncoming === "boolean" ? profile.defaults.autoSaveIncoming : null
   if (autoAcceptIncoming === null || autoSaveIncoming === null) return "??"
-  return `${autoAcceptIncoming ? "A" : "a"}${!autoSaveIncoming ? "s" : profile?.streamingSaveIncoming === true ? "X" : "S"}`
+  return `${autoAcceptIncoming ? "A" : "a"}${!autoSaveIncoming ? "s" : profile?.streamingSaveIncoming === true ? profile?.defaults?.overwriteIncoming === true ? "W" : "X" : "S"}`
 }
 
 export const displayPeerName = (name: string, id: string) => `${cleanName(name)}-${id}`

@@ -365,6 +365,8 @@ describe("TUI view", () => {
         geo: { city: "Seoul", region: "Seoul", country: "KR" },
         network: { asOrganization: "Edge ISP", colo: "ICN", ip: "203.0.113.5" },
         ua: { browser: "send-cli", os: "linux", device: "desktop" },
+        defaults: { autoAcceptIncoming: true, autoSaveIncoming: true, overwriteIncoming: true },
+        streamingSaveIncoming: true,
         ready: true,
         error: "",
       },
@@ -374,6 +376,7 @@ describe("TUI view", () => {
     expect(view.findText("Pulse")).toBe(null)
     expect(view.findText("TURN") === null).toBe(false)
     expect(view.findText("-abc123") === null).toBe(false)
+    expect(view.findText("AW") === null).toBe(false)
     expect(view.findText("Seoul, Seoul, KR") === null).toBe(false)
     expect(view.findText("Edge ISP · ICN") === null).toBe(false)
     expect(view.findText("send-cli · linux") === null).toBe(false)
@@ -383,10 +386,13 @@ describe("TUI view", () => {
     expect(selfIp.props.url).toBe("https://gi.rt.ht/:203.0.113.5")
     expect(view.toText().includes("open")).toBe(true)
     expect(view.toText().includes("used")).toBe(true)
+    expect(view.toText().includes("AW")).toBe(true)
     expect(view.toText().includes("(open)")).toBe(false)
     expect(view.toText().includes("(used)")).toBe(false)
+    expect(view.toText().includes("(AW)")).toBe(false)
     expect(view.toText().includes("( open )")).toBe(false)
     expect(view.toText().includes("( used )")).toBe(false)
+    expect(view.toText().includes("( AW )")).toBe(false)
     expect(view.findText(`save ${state.snapshot.saveDir}`)).toBe(null)
     const signaling = view.findText("Signaling")
     const turn = view.findText("TURN")
@@ -402,6 +408,28 @@ describe("TUI view", () => {
       if (!borderStyle || typeof borderStyle !== "object") throw new Error("missing self metric border style")
       expect("fg" in borderStyle ? borderStyle.fg : null).toBe(rgb(20, 25, 32))
     }
+  })
+
+  test("renders self auto-defaults from the advertised local profile", () => {
+    const renderer = createWideRenderer()
+    const state = createInitialTuiState({ room: "demo", reconnectSocket: false }, false)
+    state.autoAcceptIncoming = true
+    state.autoSaveIncoming = true
+    state.snapshot = {
+      ...state.snapshot,
+      localId: "abc123",
+      profile: {
+        ...state.snapshot.profile,
+        defaults: { autoAcceptIncoming: false, autoSaveIncoming: true, overwriteIncoming: true },
+        streamingSaveIncoming: true,
+      },
+    }
+
+    const view = renderer.render(renderTuiView(state, createNoopTuiActions()))
+    expect(view.findText("-abc123") === null).toBe(false)
+    expect(view.findText("aW") === null).toBe(false)
+    expect(view.findText("AX")).toBe(null)
+    expect(view.toText().includes("(aW)")).toBe(false)
   })
 
   test("maps degraded signaling to a warning badge tone", () => {
@@ -546,7 +574,7 @@ describe("TUI view", () => {
     state.autoSaveIncoming = false
     state.eventsExpanded = true
     expect(aboutWebUrl(state)).toBe("https://rtme.sh/#room=demo&clean=0&accept=0&offer=0&save=0")
-    expect(aboutCliCommand(state)).toBe("--room demo --clean 0 --accept 0 --offer 0 --save 0 --events --save-dir '/tmp/send files' --turn-url turn:turn.example.com:3478 --turn-url turns:turn.example.com:5349?transport=tcp --turn-username user --turn-credential pass")
+    expect(aboutCliCommand(state)).toBe("--room demo --clean 0 --accept 0 --offer 0 --save 0 --events --folder '/tmp/send files' --turn-url turn:turn.example.com:3478 --turn-url turns:turn.example.com:5349?transport=tcp --turn-username user --turn-credential pass")
   })
 
   test("does not include peer-shared TURN in the About CLI command", () => {
@@ -572,7 +600,7 @@ describe("TUI view", () => {
     state.autoSaveIncoming = false
 
     expect(resumeWebUrl(state)).toBe("https://rtme.sh/#room=demo&clean=0&accept=0&offer=0&save=0")
-    expect(resumeCliCommand(state)).toBe("bunx rtme.sh --room demo --self alice-12345678 --clean 0 --accept 0 --offer 0 --save 0 --events --save-dir '/tmp/send files' --turn-url turn:turn.example.com:3478 --turn-username user --turn-credential pass")
+    expect(resumeCliCommand(state)).toBe("bunx rtme.sh --room demo --self alice-12345678 --clean 0 --accept 0 --offer 0 --save 0 --events --folder '/tmp/send files' --turn-url turn:turn.example.com:3478 --turn-username user --turn-credential pass")
     expect(resumeOutputLines(state)).toEqual([
       "Rejoin with:",
       "",
@@ -580,7 +608,7 @@ describe("TUI view", () => {
       "https://rtme.sh/#room=demo&clean=0&accept=0&offer=0&save=0",
       "",
       "CLI",
-      "bunx rtme.sh --room demo --self alice-12345678 --clean 0 --accept 0 --offer 0 --save 0 --events --save-dir '/tmp/send files' --turn-url turn:turn.example.com:3478 --turn-username user --turn-credential pass",
+      "bunx rtme.sh --room demo --self alice-12345678 --clean 0 --accept 0 --offer 0 --save 0 --events --folder '/tmp/send files' --turn-url turn:turn.example.com:3478 --turn-username user --turn-credential pass",
       "",
     ])
   })
@@ -1326,15 +1354,15 @@ describe("TUI view", () => {
       at: Date.now(),
       kind: "profile",
       name: "alice",
-      profile: { defaults: { autoAcceptIncoming: false, autoSaveIncoming: true }, streamingSaveIncoming: true },
+      profile: { defaults: { autoAcceptIncoming: false, autoSaveIncoming: true, overwriteIncoming: true }, streamingSaveIncoming: true },
     }))
 
     unsubscribe()
 
     state.hideTerminalPeers = false
     const view = renderer.render(renderTuiView(state, createNoopTuiActions()))
-    expect(hasRenderedText(view, "aX")).toBe(true)
-    expect(hasRenderedText(view, "(aX)")).toBe(false)
+    expect(hasRenderedText(view, "aW")).toBe(true)
+    expect(hasRenderedText(view, "(aW)")).toBe(false)
     expect(hasRenderedText(view, "As")).toBe(false)
     expect(hasRenderedText(view, "(As)")).toBe(false)
   })
@@ -1368,13 +1396,19 @@ describe("TUI view", () => {
     }
     const view = renderer.render(renderTuiView(state, createNoopTuiActions()))
     const toggle = view.findById("peer-toggle-p1")
+    const peerRow = view.findById("peer-row-p1")
     const nameSlot = view.findById("peer-name-slot-p1")
     const shareButton = view.findById("peer-share-turn-p1")
     const statusCluster = view.findById("peer-status-cluster-p1")
     const status = view.nodes.find(node => node.kind === "status" && "label" in node.props && node.props.label === "connected")
-    const autoState = view.findText("AX")
-    expect(toggle === null || nameSlot === null || shareButton === null || statusCluster === null || status === undefined || autoState === null).toBe(false)
-    if (!toggle || !nameSlot || !shareButton || !statusCluster || !status || !autoState) throw new Error("missing peer header nodes")
+    const autoState = view.nodes.find(node =>
+      node.kind === "text"
+      && node.text === "AX"
+      && !!peerRow
+      && node.path.length > peerRow.path.length
+      && peerRow.path.every((part, index) => node.path[index] === part))
+    expect(toggle === null || peerRow === null || nameSlot === null || shareButton === null || statusCluster === null || status === undefined || autoState === undefined).toBe(false)
+    if (!toggle || !peerRow || !nameSlot || !shareButton || !statusCluster || !status || !autoState) throw new Error("missing peer header nodes")
     const toggleCenter = toggle.rect.y + Math.floor(toggle.rect.h / 2)
     const shareButtonCenter = shareButton.rect.y + Math.floor(shareButton.rect.h / 2)
     const statusClusterCenter = statusCluster.rect.y + Math.floor(statusCluster.rect.h / 2)

@@ -120,7 +120,7 @@ export const renderCliCommand = (
   if (includeSelf) appendCliFlag(args, "--self", options.self)
   appendToggleCliFlags(args, normalized)
   if (options.events) args.push("--events")
-  if (options.saveDir && (!options.defaultSaveDir || resolve(options.saveDir) !== options.defaultSaveDir)) appendCliFlag(args, "--save-dir", options.saveDir)
+  if (options.saveDir && (!options.defaultSaveDir || resolve(options.saveDir) !== options.defaultSaveDir)) appendCliFlag(args, "--folder", options.saveDir)
   args.push(...shareTurnCliArgs(options))
   return args.join(" ")
 }

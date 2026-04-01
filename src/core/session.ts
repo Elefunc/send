@@ -3,6 +3,7 @@ import { resolve } from "node:path"
 import type { RTCDataChannel, RTCIceCandidateInit, RTCIceServer } from "werift"
 import { RTCPeerConnection } from "werift"
 import { closeLocalFile, incomingOutputPath, loadLocalFiles, pathExists, readFileChunk, removePath, replaceOutputPath, saveIncomingFile, uniqueOutputPath, writeFileChunk, type LocalFile } from "./files"
+import { peerMatchesSelectors, validatePeerSelectors } from "./targeting"
 import {
   BASE_ICE_SERVERS,
   BUFFER_HIGH,
@@ -176,6 +177,7 @@ export interface SessionConfig {
   name?: string
   saveDir?: string
   peerSelectionMemory?: Map<string, boolean>
+  acceptFromSelectors?: string[]
   autoAcceptIncoming?: boolean
   autoSaveIncoming?: boolean
   overwriteIncoming?: boolean
@@ -192,6 +194,7 @@ export const PULSE_STALE_MS = 45_000
 const RTT_CHANGE_THRESHOLD_MS = 25
 const TRANSFER_PROGRESS_NOTIFY_MS = 125
 const PROFILE_URL = "https://ip.rt.ht/"
+const ACCEPT_FROM_REJECT_REASON = "receiver filtered by --from"
 export interface PeerConnectivitySnapshot {
   rttMs: number
   localCandidateType: string
@@ -259,6 +262,7 @@ export const sanitizeProfile = (profile?: PeerProfile): PeerProfile => ({
   defaults: {
     autoAcceptIncoming: typeof profile?.defaults?.autoAcceptIncoming === "boolean" ? profile.defaults.autoAcceptIncoming : undefined,
     autoSaveIncoming: typeof profile?.defaults?.autoSaveIncoming === "boolean" ? profile.defaults.autoSaveIncoming : undefined,
+    overwriteIncoming: typeof profile?.defaults?.overwriteIncoming === "boolean" ? profile.defaults.overwriteIncoming : undefined,
   },
   streamingSaveIncoming: typeof profile?.streamingSaveIncoming === "boolean" ? profile.streamingSaveIncoming : undefined,
   ready: !!profile?.ready,
@@ -458,6 +462,7 @@ export class SendSession {
   private autoAcceptIncoming: boolean
   private autoSaveIncoming: boolean
   private overwriteIncoming: boolean
+  private readonly acceptFromSelectors: string[]
   private readonly reconnectSocket: boolean
   private iceServers: RTCIceServer[]
   private extraTurnServers: RTCIceServer[]
@@ -483,12 +488,15 @@ export class SendSession {
   private stopped = false
 
   constructor(config: SessionConfig) {
+    const acceptFrom = validatePeerSelectors(config.acceptFromSelectors ?? [])
+    if (!acceptFrom.ok) throw new Error(acceptFrom.error)
     this.instanceId = cleanInstanceId(uid(10)) || uid(10)
     this.localId = cleanLocalId(config.localId)
     this.room = cleanRoom(config.room)
     this.name = cleanName(config.name ?? fallbackName)
     this.saveDir = resolve(config.saveDir ?? resolve(process.cwd()))
     this.peerSelectionMemory = config.peerSelectionMemory ?? new Map()
+    this.acceptFromSelectors = acceptFrom.selectors
     this.autoAcceptIncoming = !!config.autoAcceptIncoming
     this.autoSaveIncoming = !!config.autoSaveIncoming
     this.overwriteIncoming = !!config.overwriteIncoming
@@ -506,6 +514,10 @@ export class SendSession {
   onEvent(listener: (event: SessionEvent) => void) {
     this.eventSubscribers.add(listener)
     return () => this.eventSubscribers.delete(listener)
+  }
+
+  private acceptsIncomingFrom(peer: Pick<PeerState, "id" | "name">) {
+    return peerMatchesSelectors(peer, this.acceptFromSelectors)
   }
 
   snapshot(): SessionSnapshot {
@@ -675,6 +687,8 @@ export class SendSession {
     let accepted = 0
     for (const transfer of this.transfers.values()) {
       if (transfer.direction !== "in" || transfer.status !== "pending") continue
+      const peer = this.peers.get(transfer.peerId)
+      if (!peer || !this.acceptsIncomingFrom(peer)) continue
       if (await this.acceptTransfer(transfer.id)) accepted += 1
     }
     this.notify()
@@ -703,6 +717,7 @@ export class SendSession {
     const next = !!enabled
     if (next === this.overwriteIncoming) return false
     this.overwriteIncoming = next
+    this.broadcastProfile()
     this.notify()
     return true
   }
@@ -1303,6 +1318,7 @@ export class SendSession {
       defaults: {
         autoAcceptIncoming: this.autoAcceptIncoming,
         autoSaveIncoming: this.autoSaveIncoming,
+        overwriteIncoming: this.overwriteIncoming,
       },
       streamingSaveIncoming: true,
     })
@@ -1834,7 +1850,10 @@ export class SendSession {
           this.transfers.set(message.transferId, transfer)
           this.emit({ type: "transfer", transfer: this.transferSnapshot(transfer) })
         }
-        if (this.autoAcceptIncoming) await this.acceptTransfer(message.transferId)
+        if (this.autoAcceptIncoming) {
+          if (this.acceptsIncomingFrom(peer)) await this.acceptTransfer(message.transferId)
+          else this.rejectTransfer(message.transferId, ACCEPT_FROM_REJECT_REASON)
+        }
         break
       }
       case "file-accept": {

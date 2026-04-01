@@ -92,7 +92,6 @@ Important flags:
 - `--self <self>`
 - `--wait <ms>`
 - `--json`
-- `--save-dir <dir>`
 - `--turn-url <url>`
 - `--turn-username <value>`
 - `--turn-credential <value>`
@@ -114,8 +113,12 @@ Important flags:
 - `--to <peer>`
 - `--wait-peer <ms>`
 - `--json`
-- `--save-dir <dir>`
 - TURN flags
+
+TUI dual:
+
+- peer selection is the interactive equivalent of `--to`
+- queued drafts plus live ready-peer matching are the interactive equivalent of `--wait-peer`
 
 ### `send accept`
 
@@ -123,19 +126,23 @@ Waits for incoming transfers and saves them:
 
 ```bash
 bunx @elefunc/send@latest accept
-bunx @elefunc/send@latest accept --save-dir ./downloads
-bunx @elefunc/send@latest accept --once --overwrite
+bunx @elefunc/send@latest accept --folder ./downloads
+bunx @elefunc/send@latest accept --from alice --N 1
+bunx @elefunc/send@latest accept --N 3 --overwrite
 ```
 
 Important flags:
 
 - `--room <room>`
 - `--self <self>`
-- `--save-dir <dir>`
+- `--from <peer>`
+- `--folder <dir>`
 - `-o, --overwrite`
-- `--once`
+- `--N <count>`
 - `--json`
 - TURN flags
+
+`--from` and `--N` are CLI automation flags. The TUI does not expose launch-time equivalents for them.
 
 ### `send tui`
 
@@ -159,11 +166,12 @@ Important flags:
 - `--offer <0|1>`
 - `--save <0|1>`
 - `--events`
-- `--save-dir <dir>`
+- `--folder <dir>`
 - `-o, --overwrite`
 - TURN flags
 
 TUI overwrite can also be toggled live with `Ctrl+O`.
+The event pane is the human-facing log surface here; machine-readable `--json` stays CLI-only.
 
 ## Identity, Rooms, and Invites
 

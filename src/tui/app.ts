@@ -945,7 +945,10 @@ const renderSelfCard = (state: TuiState, actions: TuiActions) => denseSection({
         onBlur: actions.commitName,
       }),
     ]),
-    ui.text(`-${state.snapshot.localId}`),
+    ui.row({ gap: 1, items: "center" }, [
+      ui.text(`-${state.snapshot.localId}`),
+      tightTag(peerDefaultsToken(state.snapshot.profile), { variant: peerDefaultsVariant(state.snapshot.profile), bare: true }),
+    ]),
   ]),
   ui.row({ gap: 0, wrap: true }, [
     renderSelfMetric("Signaling", signalMetricState(state.snapshot.socketState, state.snapshot.pulse)),

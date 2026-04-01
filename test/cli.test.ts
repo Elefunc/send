@@ -165,6 +165,11 @@ describe("CLI surface", () => {
     expect(config.saveDir).toBe(resolve(process.cwd()))
   })
 
+  test("session config reads --folder into saveDir", () => {
+    const config = sessionConfigFrom({ folder: "./downloads" }, {})
+    expect(config.saveDir).toBe(resolve("./downloads"))
+  })
+
   test("session config rejects invalid binary toggle values", () => {
     expect(throwMessage(() => sessionConfigFrom({ accept: "2" }, { autoAcceptIncoming: true }))).toBe("--accept must be 0 or 1")
     expect(throwMessage(() => sessionConfigFrom({ save: "maybe" }, { autoSaveIncoming: true }))).toBe("--save must be 0 or 1")
@@ -362,6 +367,36 @@ describe("CLI surface", () => {
     expect(calls).toEqual([{ name: "accept", args: [{ "--": [], overwrite: true }] }])
   })
 
+  test("accept command forwards --from selectors", async () => {
+    const { calls, handlers } = createHandlerSpies()
+    await runCli(["bun", "send", "accept", "--from", "alice,-ab12cd34"], handlers)
+    expect(calls).toEqual([{ name: "accept", args: [{ "--": [], from: "alice,-ab12cd34" }] }])
+  })
+
+  test("accept command forwards --folder", async () => {
+    const { calls, handlers } = createHandlerSpies()
+    await runCli(["bun", "send", "accept", "--folder", "./downloads"], handlers)
+    expect(calls).toEqual([{ name: "accept", args: [{ "--": [], folder: "./downloads" }] }])
+  })
+
+  test("peers command still accepts hidden compat --folder", async () => {
+    const { calls, handlers } = createHandlerSpies()
+    await runCli(["bun", "send", "peers", "--folder", "./downloads"], handlers)
+    expect(calls).toEqual([{ name: "peers", args: [{ "--": [], folder: "./downloads" }] }])
+  })
+
+  test("offer command still accepts hidden compat --folder", async () => {
+    const { calls, handlers } = createHandlerSpies()
+    await runCli(["bun", "send", "offer", "file.txt", "--folder", "./downloads"], handlers)
+    expect(calls).toEqual([{ name: "offer", args: [["file.txt"], { "--": [], folder: "./downloads" }] }])
+  })
+
+  test("accept command forwards --N counts", async () => {
+    const { calls, handlers } = createHandlerSpies()
+    await runCli(["bun", "send", "accept", "--N", "3"], handlers)
+    expect(calls).toEqual([{ name: "accept", args: [{ "--": [], N: 3 }] }])
+  })
+
   test("tui command accepts the -o overwrite alias", async () => {
     const { calls, handlers } = createHandlerSpies()
     await runCli(["bun", "send", "tui", "-o"], handlers)
@@ -519,7 +554,7 @@ describe("CLI surface", () => {
         expect(output.includes("--name <name>")).toBe(false)
         expect(output).toContain("--to <peer>                target `name`, `name-id`, or `-id` (default: .)")
         expect(output).toContain("--wait-peer <ms>           wait for eligible peers in milliseconds (default: <infinite>)")
-        expect(output).toContain("--save-dir <dir>           save directory (default: .)")
+        expect(output.includes("--folder <dir>")).toBe(false)
         expect(output.includes("--all-ready")).toBe(false)
       })
     })
@@ -538,6 +573,41 @@ describe("CLI surface", () => {
       .toBe("--wait-peer must be a finite non-negative number of milliseconds")
   })
 
+  test("accept rejects invalid mixed --from selectors before connecting", async () => {
+    const { stdout, stderr, exitCode } = await runCliRaw("accept", "--from", ".,alice-a1")
+    expect(exitCode).toBe(1)
+    expect(stdout).toBe("")
+    expect(stderr.trim()).toBe("broadcast selector `.` cannot be combined with specific peers")
+  })
+
+  test("accept rejects invalid --N values before connecting", async () => {
+    expect(await rejectMessage(() => runCli(["bun", "send", "accept", "--N", "0"]))).toBe("--N must be an integer greater than 0")
+    expect(await rejectMessage(() => runCli(["bun", "send", "accept", "--N", "-1"]))).toBe("--N must be an integer greater than 0")
+    expect(await rejectMessage(() => runCli(["bun", "send", "accept", "--N", "1.5"]))).toBe("--N must be an integer greater than 0")
+    expect(await rejectMessage(() => runCli(["bun", "send", "accept", "--N", "foo"]))).toBe("--N must be an integer greater than 0")
+  })
+
+  test("accept rejects removed --once", async () => {
+    const { stdout, stderr, exitCode } = await runCliRaw("accept", "--once")
+    expect(exitCode).toBe(1)
+    expect(stdout).toBe("")
+    expect(stderr.trim()).toBe("Unknown option `--once`")
+  })
+
+  test("accept rejects legacy --save-dir with a rename error", async () => {
+    const { stdout, stderr, exitCode } = await runCliRaw("accept", "--save-dir", "/tmp/x")
+    expect(exitCode).toBe(1)
+    expect(stdout).toBe("")
+    expect(stderr.trim()).toBe("--save-dir was renamed to --folder")
+  })
+
+  test("bare send rejects legacy --save-dir with a rename error", async () => {
+    const { stdout, stderr, exitCode } = await runCliRaw("--save-dir", "/tmp/x")
+    expect(exitCode).toBe(1)
+    expect(stdout).toBe("")
+    expect(stderr.trim()).toBe("--save-dir was renamed to --folder")
+  })
+
   test("tui help documents the events pane flag", async () => {
     await withCliHelpEnv({ name: "send" }, async () => {
       await withStdoutTTY(false, async () => {
@@ -554,7 +624,7 @@ describe("CLI surface", () => {
         expect(output.includes("--name <name>")).toBe(false)
         expect(output).toContain("--events")
         expect(output).toContain("show the event log pane")
-        expect(output).toContain("--save-dir <dir>           save directory (default: .)")
+        expect(output).toContain("--folder <dir>             save directory (default: .)")
       })
     })
   })
@@ -620,8 +690,7 @@ describe("CLI surface", () => {
         expect(output).toContain("self identity: `name`, `name-id`, or `-id`")
         expect(output.includes("--name <name>")).toBe(false)
         expect(output).toContain("--wait <ms>                discovery wait in milliseconds (default: 3000)")
-        expect(output).toContain("--save-dir <dir>")
-        expect(output).toContain("save directory (default: .)")
+        expect(output.includes("--folder <dir>")).toBe(false)
       })
     })
   })
@@ -634,7 +703,10 @@ describe("CLI surface", () => {
         expect(output).toContain("--self <self>")
         expect(output).toContain("self identity: `name`, `name-id`, or `-id`")
         expect(output.includes("--name <name>")).toBe(false)
-        expect(output).toContain("--save-dir <dir>           save directory (default: .)")
+        expect(output).toContain("--from <peer>              accept only from `name`, `name-id`, or `-id` (default: .)")
+        expect(output).toContain("--folder <dir>             save directory (default: .)")
+        expect(output).toContain("--N <count>                exit after N saved incoming transfers")
+        expect(output.includes("--once")).toBe(false)
       })
     })
   })

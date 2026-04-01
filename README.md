@@ -30,6 +30,16 @@ When no subcommand is provided, `send` launches the TUI by default.
 
 In the TUI, the room row includes a `📋` invite link that opens the equivalent web app URL for the current committed room and toggle state.
 
+## Command Scope
+
+Not every command has a flag-for-flag TUI dual. CLI automation stays command-specific:
+
+- `peers`: `--wait`, `--json`
+- `offer`: `--to`, `--wait-peer`, `--json`
+- `accept`: `--from`, `--N`, `--json`
+
+Save-path controls only matter where incoming files are written, so `--folder` and `--overwrite` are relevant on `accept` and `tui`.
+
 ## Self Identity
 
 `--self` accepts three forms:
@@ -48,6 +58,7 @@ The `id` suffix must be exactly 8 lowercase alphanumeric characters.
 send peers --self alice
 send offer ./demo.txt --self alice-ab12cd34
 send accept --self=-ab12cd34
+send accept --from alice --N 1
 SEND_SELF=-ab12cd34 send tui
 ```
 

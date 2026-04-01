@@ -4,7 +4,7 @@ import { cac, type CAC } from "cac"
 import { joinOutputLines, type JoinOutputKind } from "./core/invite"
 import { cleanRoom, displayPeerName } from "./core/protocol"
 import type { SendSession, SessionConfig, SessionEvent } from "./core/session"
-import { resolvePeerTargets } from "./core/targeting"
+import { resolvePeerTargets, validatePeerSelectors } from "./core/targeting"
 import { ensureSessionRuntimePatches, ensureTuiRuntimePatches } from "../runtime/install"
 
 export class ExitError extends Error {
@@ -28,14 +28,21 @@ const numberOption = (value: unknown, fallback: number) => {
   const parsed = Number(value)
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback
 }
-const offerSelectors = (value: unknown) => {
-  const selectors = splitList(value)
-  return selectors.length ? selectors : ["."]
+const peerSelectors = (value: unknown) => {
+  const validated = validatePeerSelectors(splitList(value))
+  if (!validated.ok) throw new ExitError(validated.error, 1)
+  return validated.selectors
 }
 const waitPeerTimeout = (value: unknown) => {
   if (value == null) return undefined
   const parsed = Number(value)
   if (!Number.isFinite(parsed) || parsed < 0) throw new ExitError("--wait-peer must be a finite non-negative number of milliseconds", 1)
+  return parsed
+}
+const saveTargetCount = (value: unknown) => {
+  if (value == null) return undefined
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed) || parsed < 1) throw new ExitError("--N must be an integer greater than 0", 1)
   return parsed
 }
 const BINARY_OPTION_FLAGS = {
@@ -69,22 +76,93 @@ const TURN_OPTIONS = [
   ["--turn-credential <value>", "custom TURN credential"],
 ] as const
 const OVERWRITE_OPTION = ["-o, --overwrite", "overwrite same-name saved files instead of creating copies"] as const
-const SAVE_DIR_OPTION = ["--save-dir <dir>", "save directory", { default: "." }] as const
+const FOLDER_OPTION = ["--folder <dir>", "save directory", { default: "." }] as const
 const TUI_TOGGLE_OPTIONS = [
   ["--clean <0|1>", "show only connected peers when 1; show all peers when 0", { default: 1 }],
   ["--accept <0|1>", "auto-accept incoming offers: 1 on, 0 off", { default: 1 }],
   ["--offer <0|1>", "auto-offer drafts to matching ready peers: 1 on, 0 off", { default: 1 }],
   ["--save <0|1>", "auto-save completed incoming files: 1 on, 0 off", { default: 1 }],
 ] as const
+const PEERS_VISIBLE_OPTIONS = [
+  ...ROOM_SELF_OPTIONS,
+  ["--wait <ms>", "discovery wait in milliseconds", { default: 3000 }],
+  ["--json", "print a json snapshot"],
+  ...TURN_OPTIONS,
+] as const
+const OFFER_VISIBLE_OPTIONS = [
+  ...ROOM_SELF_OPTIONS,
+  ["--to <peer>", "target `name`, `name-id`, or `-id`", { default: "." }],
+  ["--wait-peer <ms>", "wait for eligible peers in milliseconds", { default: "<infinite>" }],
+  ["--json", "emit ndjson events"],
+  ...TURN_OPTIONS,
+] as const
+const ACCEPT_VISIBLE_OPTIONS = [
+  ...ROOM_SELF_OPTIONS,
+  ["--from <peer>", "accept only from `name`, `name-id`, or `-id`", { default: "." }],
+  FOLDER_OPTION,
+  OVERWRITE_OPTION,
+  ["--N <count>", "exit after N saved incoming transfers"],
+  ["--json", "emit ndjson events"],
+  ...TURN_OPTIONS,
+] as const
+const TUI_VISIBLE_OPTIONS = [
+  ...ROOM_SELF_OPTIONS,
+  ...TUI_TOGGLE_OPTIONS,
+  ["--events", "show the event log pane"],
+  FOLDER_OPTION,
+  OVERWRITE_OPTION,
+  ...TURN_OPTIONS,
+] as const
+const COMPAT_HIDDEN_FOLDER_OPTIONS = [FOLDER_OPTION] as const
 export const ACCEPT_SESSION_DEFAULTS = { autoAcceptIncoming: true, autoSaveIncoming: true } as const
 type CliOptionDefinition = readonly [flag: string, description: string, config?: { default?: unknown }]
 const addOptions = (command: CliCommand, definitions: readonly CliOptionDefinition[]) =>
   definitions.reduce((next, [flag, description, config]) => next.option(flag, description, config), command)
+const hideOptionsInHelp = <T extends CliCommand>(target: T, hiddenRawNames: readonly string[]) => {
+  if (!hiddenRawNames.length) return target
+  const hidden = new Set(hiddenRawNames)
+  const outputHelp = target.outputHelp.bind(target)
+  target.outputHelp = () => {
+    const options = target.options
+    target.options = options.filter(option => !hidden.has(option.rawName))
+    try {
+      outputHelp()
+    } finally {
+      target.options = options
+    }
+  }
+  return target
+}
+const addCommandOptions = (command: CliCommand, visibleDefinitions: readonly CliOptionDefinition[], compatHiddenDefinitions: readonly CliOptionDefinition[] = []) =>
+  hideOptionsInHelp(
+    addOptions(command, [...visibleDefinitions, ...compatHiddenDefinitions]),
+    compatHiddenDefinitions.map(([flag]) => flag),
+  )
 const normalizeCliOptions = (options: Record<string, unknown>) => {
   const normalized = { ...options }
   if (normalized.overwrite == null && normalized.o != null) normalized.overwrite = normalized.o
   delete normalized.h
   delete normalized.o
+  return normalized
+}
+const LEGACY_SAVE_DIR_FLAG = "--save-dir"
+const LEGACY_SAVE_DIR_MESSAGE = `${LEGACY_SAVE_DIR_FLAG} was renamed to --folder`
+const NEGATIVE_NUMBER_PATTERN = /^-\d+(?:\.\d+)?$/
+const rejectLegacySaveDirFlag = (argv: string[]) => {
+  for (const arg of argv.slice(2)) {
+    if (arg === "--") break
+    if (arg === LEGACY_SAVE_DIR_FLAG || arg.startsWith(`${LEGACY_SAVE_DIR_FLAG}=`)) throw new ExitError(LEGACY_SAVE_DIR_MESSAGE, 1)
+  }
+}
+const normalizeNegativeCountValue = (argv: string[]) => {
+  const normalized = [...argv]
+  for (let index = 2; index < normalized.length - 1; index += 1) {
+    if (normalized[index] !== "--N") continue
+    const next = normalized[index + 1]
+    if (!NEGATIVE_NUMBER_PATTERN.test(next)) continue
+    normalized[index] = `--N=${next}`
+    normalized.splice(index + 1, 1)
+  }
   return normalized
 }
 const withTrailingHelpLine = <T extends { outputHelp: () => void }>(target: T) => {
@@ -118,7 +196,7 @@ export const sessionConfigFrom = (options: Record<string, unknown>, defaults: { 
   return {
     room,
     ...self,
-    saveDir: resolve(`${options.saveDir ?? process.env.SEND_SAVE_DIR ?? "."}`),
+    saveDir: resolve(`${options.folder ?? process.env.SEND_SAVE_DIR ?? "."}`),
     autoAcceptIncoming: accept ?? defaults.autoAcceptIncoming ?? false,
     autoSaveIncoming: save ?? defaults.autoSaveIncoming ?? false,
     overwriteIncoming: !!options.overwrite,
@@ -244,7 +322,7 @@ const peersCommand = async (options: Record<string, unknown>) => {
 
 const offerCommand = async (files: string[], options: Record<string, unknown>) => {
   if (!files.length) throw new ExitError("offer requires at least one file path", 1)
-  const selectors = offerSelectors(options.to)
+  const selectors = peerSelectors(options.to)
   const timeoutMs = waitPeerTimeout(options.waitPeer)
   const { SendSession } = await loadSessionRuntime()
   const session = new SendSession(sessionConfigFrom(options, {}))
@@ -263,17 +341,19 @@ const offerCommand = async (files: string[], options: Record<string, unknown>) =
 }
 
 const acceptCommand = async (options: Record<string, unknown>) => {
+  const selectors = peerSelectors(options.from)
+  const targetCount = saveTargetCount(options.N)
   const { SendSession } = await loadSessionRuntime()
-  const session = new SendSession(sessionConfigFrom(options, ACCEPT_SESSION_DEFAULTS))
+  const session = new SendSession({ ...sessionConfigFrom(options, ACCEPT_SESSION_DEFAULTS), acceptFromSelectors: selectors })
   handleSignals(session)
   printCommandAnnouncement("accept", session.room, displayPeerName(session.name, session.localId), !!options.json)
   const detachReporter = attachReporter(session, !!options.json)
   await session.connect()
   printReadyStatus(session.room, !!options.json)
-  if (options.once) {
+  if (targetCount != null) {
     for (;;) {
-      const saved = session.snapshot().transfers.find(transfer => transfer.direction === "in" && transfer.savedAt > 0)
-      if (saved) break
+      const saved = session.snapshot().transfers.filter(transfer => transfer.direction === "in" && transfer.savedAt > 0).length
+      if (saved >= targetCount) break
       await Bun.sleep(125)
     }
     detachReporter()
@@ -326,40 +406,27 @@ export const createCli = (handlers: CliHandlers = defaultCliHandlers) => {
   const cli = cac(name)
   cli.usage("[command] [options]")
 
-  withTrailingHelpLine(addOptions(cli.command("peers", "list discovered peers").ignoreOptionDefaultValue(), [
-    ...ROOM_SELF_OPTIONS,
-    ["--wait <ms>", "discovery wait in milliseconds", { default: 3000 }],
-    ["--json", "print a json snapshot"],
-    SAVE_DIR_OPTION,
-    ...TURN_OPTIONS,
-  ])).action(options => handlers.peers(normalizeCliOptions(options)))
+  withTrailingHelpLine(addCommandOptions(
+    cli.command("peers", "list discovered peers").ignoreOptionDefaultValue(),
+    PEERS_VISIBLE_OPTIONS,
+    COMPAT_HIDDEN_FOLDER_OPTIONS,
+  )).action(options => handlers.peers(normalizeCliOptions(options)))
 
-  withTrailingHelpLine(addOptions(cli.command("offer [...files]", "offer files to browser-compatible peers").ignoreOptionDefaultValue(), [
-    ...ROOM_SELF_OPTIONS,
-    ["--to <peer>", "target `name`, `name-id`, or `-id`", { default: "." }],
-    ["--wait-peer <ms>", "wait for eligible peers in milliseconds", { default: "<infinite>" }],
-    ["--json", "emit ndjson events"],
-    SAVE_DIR_OPTION,
-    ...TURN_OPTIONS,
-  ])).action((files, options) => handlers.offer(files, normalizeCliOptions(options)))
+  withTrailingHelpLine(addCommandOptions(
+    cli.command("offer [...files]", "offer files to browser-compatible peers").ignoreOptionDefaultValue(),
+    OFFER_VISIBLE_OPTIONS,
+    COMPAT_HIDDEN_FOLDER_OPTIONS,
+  )).action((files, options) => handlers.offer(files, normalizeCliOptions(options)))
 
-  withTrailingHelpLine(addOptions(cli.command("accept", "receive and save files").ignoreOptionDefaultValue(), [
-    ...ROOM_SELF_OPTIONS,
-    SAVE_DIR_OPTION,
-    OVERWRITE_OPTION,
-    ["--once", "exit after the first saved incoming transfer"],
-    ["--json", "emit ndjson events"],
-    ...TURN_OPTIONS,
-  ])).action(options => handlers.accept(normalizeCliOptions(options)))
+  withTrailingHelpLine(addCommandOptions(
+    cli.command("accept", "receive and save files").ignoreOptionDefaultValue(),
+    ACCEPT_VISIBLE_OPTIONS,
+  )).action(options => handlers.accept(normalizeCliOptions(options)))
 
-  withTrailingHelpLine(addOptions(cli.command("tui [...files]", "launch the interactive terminal UI").ignoreOptionDefaultValue(), [
-    ...ROOM_SELF_OPTIONS,
-    ...TUI_TOGGLE_OPTIONS,
-    ["--events", "show the event log pane"],
-    SAVE_DIR_OPTION,
-    OVERWRITE_OPTION,
-    ...TURN_OPTIONS,
-  ])).action((files, options) => handlers.tui(normalizeCliOptions(files.length ? { ...options, draftPaths: files } : options)))
+  withTrailingHelpLine(addCommandOptions(
+    cli.command("tui [...files]", "launch the interactive terminal UI").ignoreOptionDefaultValue(),
+    TUI_VISIBLE_OPTIONS,
+  )).action((files, options) => handlers.tui(normalizeCliOptions(files.length ? { ...options, draftPaths: files } : options)))
 
   cli.help(sections => {
     const usage = sections.find(section => section.title === "Usage:")
@@ -391,13 +458,15 @@ const explicitCommand = (argv: string[], handlers: CliHandlers) => {
 }
 
 export const runCli = async (argv = process.argv, handlers: CliHandlers = defaultCliHandlers) => {
+  const normalizedArgv = normalizeNegativeCountValue(argv)
+  rejectLegacySaveDirFlag(normalizedArgv)
   const cli = createCli(handlers)
-  const command = explicitCommand(argv, handlers)
-  const parsed = cli.parse(argv, { run: false }) as { options: Record<string, unknown> }
+  const command = explicitCommand(normalizedArgv, handlers)
+  const parsed = cli.parse(normalizedArgv, { run: false }) as { options: Record<string, unknown> }
   const helpRequested = !!parsed.options.help || !!parsed.options.h
   if (!command) {
     if (helpRequested) {
-      printSubcommandHelp(argv, handlers, "tui")
+      printSubcommandHelp(normalizedArgv, handlers, "tui")
       return
     }
     await handlers.tui(normalizeCliOptions(parsed.options))

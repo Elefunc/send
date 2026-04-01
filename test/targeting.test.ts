@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { resolvePeerTargets } from "../src/core/targeting"
+import { peerMatchesSelectors, resolvePeerTargets, validatePeerSelectors } from "../src/core/targeting"
 
 const peers = [
   { id: "a1", name: "alice", ready: true, presence: "active" as const },
@@ -67,5 +67,25 @@ describe("resolvePeerTargets", () => {
     ], ["alice"])
     expect(result.ok).toBe(false)
     expect(result.error).toBe("peer not ready: alice-a2")
+  })
+})
+
+describe("peerMatchesSelectors", () => {
+  test("matches all peers for the broadcast selector", () => {
+    expect(peerMatchesSelectors({ id: "a1", name: "alice" }, ["."])).toBe(true)
+  })
+
+  test("matches exact-name and id selectors", () => {
+    expect(peerMatchesSelectors({ id: "a1", name: "alice" }, ["alice"])).toBe(true)
+    expect(peerMatchesSelectors({ id: "a1", name: "alice" }, ["wrong-a1"])).toBe(true)
+    expect(peerMatchesSelectors({ id: "a1", name: "alice" }, ["bob"])).toBe(false)
+  })
+})
+
+describe("validatePeerSelectors", () => {
+  test("rejects mixing broadcast and specific selectors", () => {
+    const result = validatePeerSelectors([".", "alice-a1"])
+    expect(result.ok).toBe(false)
+    expect(result.error).toBe("broadcast selector `.` cannot be combined with specific peers")
   })
 })

@@ -73,19 +73,21 @@ describe("SendSession mutators", () => {
     expect(session.snapshot().profile?.defaults).toEqual({
       autoAcceptIncoming: false,
       autoSaveIncoming: false,
+      overwriteIncoming: false,
     })
     expect(session.snapshot().profile?.streamingSaveIncoming).toBe(true)
     expect(session.snapshot().pulse.state).toBe("idle")
     expect(session.snapshot().turnState).toBe("none")
   })
 
-  test("rebroadcasts advertised profile defaults when auto-accept and auto-save change", async () => {
+  test("rebroadcasts advertised profile defaults when auto-accept, auto-save, and overwrite change", async () => {
     const sent: string[] = []
     const session = new SendSession({ room: "demo", reconnectSocket: false }) as any
     session.socket = { readyState: WebSocket.OPEN, send: (message: string) => void sent.push(message) }
 
     await session.setAutoAcceptIncoming(true)
     await session.setAutoSaveIncoming(true)
+    expect(session.setOverwriteIncoming(true)).toBe(true)
 
     const profiles = sent
       .map(message => JSON.parse(message))
@@ -95,18 +97,20 @@ describe("SendSession mutators", () => {
     expect(profiles.at(-1)?.defaults).toEqual({
       autoAcceptIncoming: true,
       autoSaveIncoming: true,
+      overwriteIncoming: true,
     })
     expect(profiles.at(-1)?.streamingSaveIncoming).toBe(true)
     expect(session.snapshot().profile?.defaults).toEqual({
       autoAcceptIncoming: true,
       autoSaveIncoming: true,
+      overwriteIncoming: true,
     })
     expect(session.snapshot().profile?.streamingSaveIncoming).toBe(true)
   })
 
   test("notifies subscribers for consecutive inbound profile updates", async () => {
     const session = new SendSession({ room: "demo", localId: "self", reconnectSocket: false }) as any
-    const snapshots: Array<{ autoAcceptIncoming?: boolean; autoSaveIncoming?: boolean } | undefined> = []
+    const snapshots: Array<{ autoAcceptIncoming?: boolean; autoSaveIncoming?: boolean; overwriteIncoming?: boolean } | undefined> = []
     session.subscribe(() => {
       const next = session.snapshot().peers[0]?.profile?.defaults
       if (JSON.stringify(snapshots.at(-1)) !== JSON.stringify(next)) snapshots.push(next)
@@ -128,16 +132,17 @@ describe("SendSession mutators", () => {
       at: Date.now(),
       kind: "profile",
       name: "alice",
-      profile: { defaults: { autoAcceptIncoming: false, autoSaveIncoming: true } },
+      profile: { defaults: { autoAcceptIncoming: false, autoSaveIncoming: true, overwriteIncoming: true }, streamingSaveIncoming: true },
     }))
 
     expect(snapshots).toEqual([
       { autoAcceptIncoming: true, autoSaveIncoming: false },
-      { autoAcceptIncoming: false, autoSaveIncoming: true },
+      { autoAcceptIncoming: false, autoSaveIncoming: true, overwriteIncoming: true },
     ])
     expect(session.snapshot().peers[0]?.profile?.defaults).toEqual({
       autoAcceptIncoming: false,
       autoSaveIncoming: true,
+      overwriteIncoming: true,
     })
   })
 
@@ -543,6 +548,22 @@ describe("SendSession mutators", () => {
     expect(JSON.parse(sent[0]).kind).toBe("file-accept")
   })
 
+  test("enabling auto-accept accepts only matching pending transfers when acceptFromSelectors is set", async () => {
+    const sent: string[] = []
+    const session = new SendSession({ room: "demo", reconnectSocket: false, acceptFromSelectors: ["alice"] }) as any
+    session.peers.set("p1", readyPeer(sent))
+    session.peers.set("p2", { ...readyPeer(sent), id: "p2", name: "bob" })
+    session.transfers.set("t1", incomingTransfer())
+    session.transfers.set("t2", incomingTransfer({ id: "t2", peerId: "p2", peerName: "bob" }))
+
+    const accepted = await session.setAutoAcceptIncoming(true)
+
+    expect(accepted).toBe(1)
+    expect(session.transfers.get("t1").status).toBe("accepted")
+    expect(session.transfers.get("t2").status).toBe("pending")
+    expect(sent.map(message => JSON.parse(message).kind)).toEqual(["file-accept"])
+  })
+
   test("enabling auto-save saves current completed incoming transfers", async () => {
     const dir = join(process.cwd(), ".tmp-send-session-test")
     await rm(dir, { recursive: true, force: true })
@@ -619,6 +640,34 @@ describe("SendSession mutators", () => {
     expect(events.some(event => event.type === "saved" && event.transfer.id === "t1" && event.transfer.savedPath === transfer.savedPath)).toBe(true)
 
     await rm(dir, { recursive: true, force: true })
+  })
+
+  test("auto-accept accepts matching incoming offers when acceptFromSelectors is set", async () => {
+    const sent: string[] = []
+    const session = new SendSession({ room: "demo", reconnectSocket: false, autoAcceptIncoming: true, acceptFromSelectors: ["alice"] }) as any
+    const peer = readyPeer(sent)
+    session.peers.set("p1", peer)
+
+    await session.handleTransferControl(peer, { kind: "file-offer", transferId: "t1", name: "hello.txt", size: 5, type: "text/plain", lastModified: 0, chunkSize: 5, totalChunks: 1, to: session.localId })
+
+    expect(session.transfers.get("t1").status).toBe("accepted")
+    expect(JSON.parse(sent[0]).kind).toBe("file-accept")
+    expect(JSON.parse(sent[0]).transferId).toBe("t1")
+  })
+
+  test("auto-accept rejects non-matching incoming offers when acceptFromSelectors is set", async () => {
+    const sent: string[] = []
+    const session = new SendSession({ room: "demo", reconnectSocket: false, autoAcceptIncoming: true, acceptFromSelectors: ["alice"] }) as any
+    const peer = { ...readyPeer(sent), id: "p2", name: "bob" }
+    session.peers.set("p2", peer)
+
+    await session.handleTransferControl(peer, { kind: "file-offer", transferId: "t1", name: "hello.txt", size: 5, type: "text/plain", lastModified: 0, chunkSize: 5, totalChunks: 1, to: session.localId })
+
+    expect(session.transfers.get("t1").status).toBe("rejected")
+    expect(session.transfers.get("t1").error).toBe("receiver filtered by --from")
+    expect(JSON.parse(sent[0]).kind).toBe("file-reject")
+    expect(JSON.parse(sent[0]).transferId).toBe("t1")
+    expect(JSON.parse(sent[0]).reason).toBe("receiver filtered by --from")
   })
 
   test("overwrites the same streamed target path when overwrite mode is enabled", async () => {
