@@ -5,7 +5,7 @@ usage() {
   cat <<'EOF'
 Usage: sign-pe-from-wsl.sh <file> [file ...] [--outdir <dir>]
 
-Sign one or more Windows PE files from WSL using cs.
+Fallback helper to sign one or more Windows PE files from WSL using cs.
 
 Behavior:
 - accept WSL or Windows source paths
@@ -16,6 +16,8 @@ Behavior:
 - overwrite originals by default, or write signed copies into --outdir
 
 Notes:
+- primary standalone/release builds now sign in writable Windows temp storage directly
+- use this helper for ad-hoc WSL-path files or manual recovery flows
 - reject duplicate basenames when --outdir would collide
 - keep source files untouched if signing or verification fails
 EOF

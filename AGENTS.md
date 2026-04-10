@@ -35,13 +35,13 @@ Windows EXE targets now embed native Bun Windows metadata:
 - copyright: `Copyright (c) Elefunc, Inc.`
 - app icon: transparent Chromium-rendered `📤` capture from `assets/windows-app-icon.png` and `assets/windows-app-icon.ico`
 
-Windows EXE targets are built from WSL2 by jumping into native Windows Bun and are signed afterward with the local Trusted Signing stack.
+Windows EXE targets are built from WSL2 by jumping into native Windows Bun, staged in writable Windows temp storage, and signed there with the local Trusted Signing stack before being copied back to the requested output path.
 
 Prerequisites for Windows EXE targets:
 
 - run the build from WSL2
 - `bun.exe` available on Windows
-- `cs`, `sign.exe`, `az`, `powershell.exe`, `wslpath`, and `sha256sum` available
+- `cs`, `sign.exe`, `az`, `powershell.exe`, and `wslpath` available
 - active Azure auth for Trusted Signing
 
 Compile all supported Bun standalone targets into `out/`:
@@ -151,6 +151,7 @@ Launches the Rezi-based terminal UI explicitly:
 ```bash
 bunx @elefunc/send@latest tui
 bunx @elefunc/send@latest tui ./file.txt ./other.txt
+bunx @elefunc/send@latest tui --filter bob
 bunx @elefunc/send@latest tui --events
 bunx @elefunc/send@latest tui --accept 0 --offer 0 --save 1
 ```
@@ -161,6 +162,7 @@ Important flags:
 
 - `--room <room>`
 - `--self <self>`
+- `--filter <text>`
 - `--clean <0|1>`
 - `--accept <0|1>`
 - `--offer <0|1>`
@@ -394,7 +396,7 @@ Operational implications:
 - binaries are large because they embed a production runtime tree
 - Windows builds are stamped with rtme.sh executable metadata
 - Windows builds are stamped with the Chromium-rendered `📤` Windows app icon
-- Windows builds are compiled through a WSL2-to-Windows bridge and then code-signed from WSL
+- Windows builds are compiled through a WSL2-to-Windows bridge, signed in writable Windows temp storage via `cs`, and then copied back to the requested output path
 - `build:standalone_all` assumes WSL2 whenever the target matrix includes Windows executables
 - failed Windows signing removes the affected output artifacts instead of leaving unsigned `.exe` files behind
 

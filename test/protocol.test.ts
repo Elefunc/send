@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { cleanName, cleanRoom, displayPeerName, peerDefaultsToken, SIGNAL_PULSE_URL, signalSocketUrl } from "../src/core/protocol"
+import { cleanFilter, cleanName, cleanRoom, displayPeerName, peerDefaultsToken, SIGNAL_PULSE_URL, signalSocketUrl } from "../src/core/protocol"
 
 describe("protocol cleaners", () => {
   test("cleanRoom normalizes room ids", () => {
@@ -8,6 +8,12 @@ describe("protocol cleaners", () => {
 
   test("cleanName strips to compact id-safe values", () => {
     expect(cleanName(" Alice Cooper ")).toBe("alicecooper")
+  })
+
+  test("cleanFilter keeps non-blank text and clears blank values", () => {
+    expect(cleanFilter("Alpha Beta")).toBe("Alpha Beta")
+    expect(cleanFilter("  Alpha Beta  ")).toBe("  Alpha Beta  ")
+    expect(cleanFilter("   \n\t  ")).toBe("")
   })
 
   test("displayPeerName keeps browser-compatible suffix form", () => {

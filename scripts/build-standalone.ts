@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process"
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { createHash } from "node:crypto"
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { basename, dirname, join, relative, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -26,9 +27,9 @@ const WINDOWS_ICON_RELATIVE_PATH = "assets/windows-app-icon.ico"
 export const WINDOWS_BRIDGE_ENV = "SEND_STANDALONE_WINDOWS_BRIDGE"
 export const WINDOWS_SKIP_SIGN_ENV = "SEND_STANDALONE_SKIP_WINDOWS_SIGN"
 export const WINDOWS_PREREQS_CHECKED_ENV = "SEND_STANDALONE_WSL_PREREQS_CHECKED"
-const WINDOWS_SIGN_HELPER_PATH = join(packageRoot, "scripts/sign-pe-from-wsl.sh")
 export const WINDOWS_ICON_PATH = join(packageRoot, WINDOWS_ICON_RELATIVE_PATH)
-const WSL_SIGNING_COMMANDS = ["az", "cs", "cp", "mktemp", "powershell.exe", "realpath", "sha256sum", "stat", "wslpath"] as const
+const WSL_SIGNING_COMMANDS = ["az", "cs", "powershell.exe", "wslpath"] as const
+const WINDOWS_TEMP_STAGE_PREFIX = "send-standalone-windows-"
 
 const toImportSpecifier = (fromDir: string, targetPath: string) => {
   const relativePath = relative(fromDir, targetPath).replaceAll("\\", "/")
@@ -133,9 +134,28 @@ const runCommandChecked = (
 }
 
 const wslWindowsPath = (path: string) => runCommandChecked("wslpath", ["-w", path], { errorLabel: `wslpath -w ${path}` }).stdout.trim()
+const windowsLocalAppData = () =>
+  runCommandChecked("powershell.exe", ["-NoProfile", "-Command", "[Environment]::GetFolderPath('LocalApplicationData')"], {
+    errorLabel: "Unable to resolve LOCALAPPDATA from PowerShell",
+  }).stdout.replaceAll("\r", "").trim()
+const windowsLocalTempWsl = () => runCommandChecked("wslpath", ["-u", windowsLocalAppData()], {
+  errorLabel: "Unable to convert LOCALAPPDATA to a WSL path",
+}).stdout.trim().replace(/\/+$/, "") + "/Temp"
 
 const encodePowerShellScript = (script: string) => Buffer.from(script, "utf16le").toString("base64")
 const psQuote = (value: string) => value.replaceAll("'", "''")
+const fileSha256 = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex")
+const fileSize = (path: string) => statSync(path).size
+const setWindowsWritable = (path: string) => {
+  runCommandChecked("powershell.exe", ["-NoProfile", "-Command", `$item = Get-Item -LiteralPath '${psQuote(path)}'; $item.IsReadOnly = $false`], {
+    errorLabel: `Unable to clear read-only flag for ${path}`,
+  })
+}
+const verifyAuthenticode = (path: string) => {
+  runCommandChecked("powershell.exe", ["-NoProfile", "-Command", `$sig = Get-AuthenticodeSignature -LiteralPath '${psQuote(path)}'; if ($sig.Status -ne 'Valid') { Write-Error ('Authenticode status: ' + $sig.Status + ' ' + $sig.StatusMessage); exit 1 }`], {
+    errorLabel: `Authenticode verification failed for ${path}`,
+  })
+}
 
 export const renderWslWindowsBridgeScript = (options: {
   keepTemp: boolean
@@ -165,7 +185,6 @@ export const assertWindowsSigningPrerequisites = (
   assertWindowsIconAssetExists(target, WINDOWS_ICON_PATH, hostPlatform)
   assertWindowsBuildHostSupported(target, hostPlatform, env, procVersion)
   if (hostPlatform !== "linux" || env[WINDOWS_PREREQS_CHECKED_ENV] === "1") return
-  if (!existsSync(WINDOWS_SIGN_HELPER_PATH)) throw new Error(`Missing Windows signing helper: ${WINDOWS_SIGN_HELPER_PATH}`)
   for (const command of WSL_SIGNING_COMMANDS) {
     runCommandChecked("bash", ["-lc", `command -v ${command}`], { errorLabel: `Missing required command: ${command}` })
   }
@@ -177,33 +196,69 @@ export const assertWindowsSigningPrerequisites = (
   })
 }
 
-export const signWindowsArtifactsFromWsl = (artifactPaths: readonly string[]) => {
-  if (!artifactPaths.length) return
-  const proc = spawnSync("bash", [WINDOWS_SIGN_HELPER_PATH, ...artifactPaths], {
-    cwd: packageRoot,
+const signWindowsArtifactInPlaceFromWsl = (artifactPath: string) => {
+  const artifactWin = wslWindowsPath(artifactPath)
+  const preHash = fileSha256(artifactPath)
+  const preSize = fileSize(artifactPath)
+  setWindowsWritable(artifactWin)
+  runCommandChecked("cs", [artifactWin], {
     stdio: "inherit",
+    errorLabel: `Windows signing failed for ${artifactPath}`,
   })
-  if (proc.error) throw proc.error
-  if (proc.status !== 0) throw new Error(`Windows signing failed with exit code ${proc.status}`)
+  const postHash = fileSha256(artifactPath)
+  const postSize = fileSize(artifactPath)
+  if (postHash === preHash) throw new Error(`Signed hash did not change for ${artifactPath}`)
+  if (postSize === preSize) throw new Error(`Signed size did not change for ${artifactPath}`)
+  verifyAuthenticode(artifactWin)
+}
+
+export const windowsBridgeArtifactPaths = (outfile: string, target: string, stageRoot: string) => {
+  const stageOutfile = join(stageRoot, basename(outfile))
+  return {
+    stageOutfile,
+    stageArtifactPath: standaloneArtifactPathFromOutfile(stageOutfile, target, "win32"),
+    finalArtifactPath: standaloneArtifactPathFromOutfile(outfile, target, "win32"),
+  }
+}
+
+const copyWindowsArtifactToOutput = (sourcePath: string, outputPath: string) => {
+  mkdirSync(dirname(outputPath), { recursive: true })
+  if (existsSync(outputPath) && outputPath.startsWith("/mnt/")) setWindowsWritable(wslWindowsPath(outputPath))
+  rmSync(outputPath, { force: true })
+  cpSync(sourcePath, outputPath)
 }
 
 const buildWindowsStandaloneFromWsl = (options: BuildOptions) => {
   if (!options.target) throw new Error("WSL Windows bridge requires an explicit Windows Bun target")
-  const packageRootWin = wslWindowsPath(packageRoot)
-  const outfileWin = wslWindowsPath(options.outfile)
-  const script = renderWslWindowsBridgeScript({
-    keepTemp: options.keepTemp,
-    outfileWin,
-    packageRootWin,
-    skipSign: shouldSkipWindowsSigning(),
-    target: options.target,
-  })
-  const proc = spawnSync("powershell.exe", ["-NoProfile", "-EncodedCommand", encodePowerShellScript(script)], {
-    cwd: packageRoot,
-    stdio: "inherit",
-  })
-  if (proc.error) throw proc.error
-  if (proc.status !== 0) throw new Error(`Windows bridge build failed with exit code ${proc.status}`)
+  const stageRoot = mkdtempSync(join(windowsLocalTempWsl(), WINDOWS_TEMP_STAGE_PREFIX))
+  const { stageOutfile, stageArtifactPath, finalArtifactPath } = windowsBridgeArtifactPaths(options.outfile, options.target, stageRoot)
+  try {
+    const packageRootWin = wslWindowsPath(packageRoot)
+    const outfileWin = wslWindowsPath(stageOutfile)
+    const script = renderWslWindowsBridgeScript({
+      keepTemp: options.keepTemp,
+      outfileWin,
+      packageRootWin,
+      skipSign: shouldSkipWindowsSigning(),
+      target: options.target,
+    })
+    const proc = spawnSync("powershell.exe", ["-NoProfile", "-EncodedCommand", encodePowerShellScript(script)], {
+      cwd: packageRoot,
+      stdio: "inherit",
+    })
+    if (proc.error) throw proc.error
+    if (proc.status !== 0) throw new Error(`Windows bridge build failed with exit code ${proc.status}`)
+    if (!existsSync(stageArtifactPath)) throw new Error(`Expected Windows bridge artifact was not created: ${stageArtifactPath}`)
+    if (!shouldSkipWindowsSigning()) signWindowsArtifactInPlaceFromWsl(stageArtifactPath)
+    copyWindowsArtifactToOutput(stageArtifactPath, finalArtifactPath)
+    console.log(`Built ${options.outfile}`)
+  } catch (error) {
+    rmSync(options.outfile, { force: true })
+    if (finalArtifactPath !== options.outfile) rmSync(finalArtifactPath, { force: true })
+    throw error
+  } finally {
+    if (!options.keepTemp) rmSync(stageRoot, { recursive: true, force: true })
+  }
 }
 
 export const normalizeWindowsVersion = (version: string) => {
@@ -356,16 +411,7 @@ const main = async () => {
   if (isWindowsCompileTarget(options.target)) {
     assertWindowsSigningPrerequisites(options.target)
     if (process.platform === "linux") {
-      const artifactPath = standaloneArtifactPathFromOutfile(options.outfile, options.target)
       buildWindowsStandaloneFromWsl(options)
-      if (!shouldSkipWindowsSigning()) {
-        try {
-          signWindowsArtifactsFromWsl([artifactPath])
-        } catch (error) {
-          rmSync(artifactPath, { force: true })
-          throw error
-        }
-      }
       return
     }
   }

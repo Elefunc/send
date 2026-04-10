@@ -348,12 +348,13 @@ describe("CLI surface", () => {
 
   test("defaults no-subcommand option-only invocations to tui", async () => {
     const { calls, handlers } = createHandlerSpies()
-    await runCli(["bun", "send", "--room", "demo", "--events", "-o", "--to", "peer", "--bogus"], handlers)
+    await runCli(["bun", "send", "--room", "demo", "--filter", "Alpha Beta", "--events", "-o", "--to", "peer", "--bogus"], handlers)
     expect(calls.length).toBe(1)
     expect(calls[0]?.name).toBe("tui")
     expect(calls[0]?.args[0]).toEqual({
       "--": [],
       room: "demo",
+      filter: "Alpha Beta",
       events: true,
       overwrite: true,
       to: "peer",
@@ -615,6 +616,8 @@ describe("CLI surface", () => {
         expect(output).toContain("Usage:\n  $ send tui [...files]")
         expect(output).toContain("--room <room>              room id (default: <random>)")
         expect(output).toContain("--self <self>")
+        expect(output).toContain("--filter <text>")
+        expect(output).toContain("preload the peer filter")
         expect(output).toContain("--clean <0|1>              show only connected peers when 1; show all peers when 0 (default: 1)")
         expect(output).toContain("--accept <0|1>             auto-accept incoming offers: 1 on, 0 off (default: 1)")
         expect(output).toContain("--offer <0|1>              auto-offer drafts to matching ready peers: 1 on, 0 off (default: 1)")
@@ -640,6 +643,18 @@ describe("CLI surface", () => {
         accept: 0,
         offer: 0,
         save: 0,
+      }],
+    }])
+  })
+
+  test("tui command forwards the peer filter", async () => {
+    const { calls, handlers } = createHandlerSpies()
+    await runCli(["bun", "send", "tui", "--filter", "Alpha Beta"], handlers)
+    expect(calls).toEqual([{
+      name: "tui",
+      args: [{
+        "--": [],
+        filter: "Alpha Beta",
       }],
     }])
   })

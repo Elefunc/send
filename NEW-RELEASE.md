@@ -11,14 +11,25 @@ Do not publish from this local `cli/` directory. Do not reuse local `out/`. GitH
 - `powershell.exe`, `wslpath`, `cs`
 - Azure Trusted Signing auth already works
 - Bun npm auth already works
+- run this from the local `cli/` source tree you want to release
 - local `cli/package.json` is already bumped to the new version
+
+Preflight:
+
+```bash
+gh auth status
+az account show --output none
+bun pm whoami
+```
+
+If `bun pm whoami` fails, fix Bun/npm auth before continuing.
 
 ## Vars
 
 ```bash
-export VERSION=0.1.36
-export PREV_VERSION=0.1.35
-export SRC_DIR=/mnt/c/Users/cetin/Desktop/code/Edge/send/cli
+export VERSION=0.1.37
+export PREV_VERSION=0.1.36
+export SRC_DIR="$(pwd)"
 export REL_DIR=/tmp/send-release-$VERSION
 export NOTES=/tmp/send-release-$VERSION-notes.md
 export WIN_STAGE=/mnt/c/Users/cetin/AppData/Local/Temp/send-release-$VERSION-winstage
@@ -63,9 +74,9 @@ Release notes:
 
 ```bash
 cat > "$NOTES" <<EOF
-- <highlight 1>
-- <highlight 2>
-- <highlight 3>
+- TUI `--filter` now matches the web app `#filter` behavior and is preserved in TUI invite/rejoin links.
+- Bun `1.3.12` UDP `recv ECONNREFUSED` no longer crashes active sessions.
+- TUI sessions now advertise `send-tui` instead of `send-cli`.
 
 **Full Changelog**: https://github.com/Elefunc/send/compare/v$PREV_VERSION...v$VERSION
 EOF
@@ -98,6 +109,8 @@ Expected assets: 16 total.
 ## Windows Fallback
 
 Use this only if the Windows phase of `bun run build:standalone_all` hangs or fails from the `/tmp` clone.
+
+Because these fallback builds happen entirely in Windows temp storage, sign them directly with `cs`. Do not bounce them back through `sign-pe-from-wsl.sh`.
 
 Export the committed release tree to Windows storage:
 
@@ -139,14 +152,19 @@ do
 done
 ```
 
-Sign and copy the Windows binaries back into the release clone:
+Sign, verify, and copy the Windows binaries back into the release clone:
 
 ```bash
-bash "$REL_DIR/scripts/sign-pe-from-wsl.sh" \
-  "$WIN_STAGE/out/send-windows-x64.exe" \
-  "$WIN_STAGE/out/send-windows-x64-baseline.exe" \
-  "$WIN_STAGE/out/send-windows-x64-modern.exe" \
-  "$WIN_STAGE/out/send-windows-arm64.exe"
+cs \
+  "$(wslpath -w "$WIN_STAGE/out/send-windows-x64.exe")" \
+  "$(wslpath -w "$WIN_STAGE/out/send-windows-x64-baseline.exe")" \
+  "$(wslpath -w "$WIN_STAGE/out/send-windows-x64-modern.exe")" \
+  "$(wslpath -w "$WIN_STAGE/out/send-windows-arm64.exe")"
+
+for exe in "$WIN_STAGE/out"/send-windows-*.exe
+do
+  powershell.exe -NoProfile -Command "\$sig = Get-AuthenticodeSignature -LiteralPath '$(wslpath -w "$exe" | sed "s/'/''/g")'; if (\$sig.Status -ne 'Valid') { Write-Error ('Authenticode status: ' + \$sig.Status + ' ' + \$sig.StatusMessage); exit 1 }"
+done
 
 cp -f "$WIN_STAGE/out"/send-windows-*.exe "$REL_DIR/out"/
 ```
@@ -156,6 +174,7 @@ Then rerun the GitHub release step from `"$REL_DIR"`.
 ## Notes
 
 - Keep `out/` out of the git commit. Build after the commit.
+- `bun run build:standalone_all` now signs Windows release assets inline by staging them in writable Windows temp first.
 - `bun publish --access public` should be run interactively.
 - `403 ... You cannot publish over the previously published versions` means npm already has that version.
 - Upload only binaries. Do not upload `send-windows-x64.extracted.png` or any other extra files.

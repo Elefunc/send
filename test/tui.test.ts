@@ -166,6 +166,17 @@ describe("TUI view", () => {
     expect(state.notice.text.includes("q quits")).toBe(false)
   })
 
+  test("seeds the peer filter from TUI launch options", () => {
+    const state = createInitialTuiState({ room: "demo", reconnectSocket: false }, false, { filter: "Alpha Beta" })
+    expect(state.peerSearch).toBe("Alpha Beta")
+  })
+
+  test("uses send-tui for the initial local session profile", () => {
+    const state = createInitialTuiState({ room: "demo", reconnectSocket: false }, false)
+    expect(state.session.snapshot().profile?.ua?.browser).toBe("send-tui")
+    expect(state.snapshot.profile?.ua?.browser).toBe("send-tui")
+  })
+
   test("renders the header brand as separate icon and label nodes", () => {
     const renderer = createWideRenderer()
     const state = createInitialTuiState({ room: "demo", reconnectSocket: false }, false)
@@ -364,7 +375,7 @@ describe("TUI view", () => {
       profile: {
         geo: { city: "Seoul", region: "Seoul", country: "KR" },
         network: { asOrganization: "Edge ISP", colo: "ICN", ip: "203.0.113.5" },
-        ua: { browser: "send-cli", os: "linux", device: "desktop" },
+        ua: { browser: "send-tui", os: "linux", device: "desktop" },
         defaults: { autoAcceptIncoming: true, autoSaveIncoming: true, overwriteIncoming: true },
         streamingSaveIncoming: true,
         ready: true,
@@ -379,7 +390,7 @@ describe("TUI view", () => {
     expect(view.findText("AW") === null).toBe(false)
     expect(view.findText("Seoul, Seoul, KR") === null).toBe(false)
     expect(view.findText("Edge ISP · ICN") === null).toBe(false)
-    expect(view.findText("send-cli · linux") === null).toBe(false)
+    expect(view.findText("send-tui · linux") === null).toBe(false)
     const selfIp = view.nodes.find(node => node.kind === "link" && "label" in node.props && node.props.label === "203.0.113.5")
     expect(selfIp === undefined).toBe(false)
     if (!selfIp) throw new Error("missing self IP link")
@@ -504,6 +515,38 @@ describe("TUI view", () => {
     expect(inviteDropdown.props.items).toEqual([
       { id: "cli", label: "CLI", shortcut: "bunx rtme.sh --room demo --overwrite" },
       { id: "web", label: "WEB", shortcut: "rtme.sh/#room=demo&overwrite=1" },
+    ])
+  })
+
+  test("includes the active peer filter in invite previews and share outputs", () => {
+    const renderer = createWideRenderer()
+    const state = createInitialTuiState({ room: "demo", name: "alice", localId: "12345678", reconnectSocket: false }, true, { filter: "Alpha Beta" })
+    state.inviteDropdownOpen = true
+    const view = renderer.render(renderTuiView(state, createNoopTuiActions()))
+    const inviteDropdown = view.findById("room-invite-dropdown")
+    expect(inviteDropdown === null).toBe(false)
+    if (!inviteDropdown) throw new Error("missing room invite dropdown")
+    expect(inviteDropdown.props.items).toEqual([
+      { id: "cli", label: "CLI", shortcut: "bunx rtme.sh --room demo --filter 'Alpha Beta'" },
+      { id: "web", label: "WEB", shortcut: "rtme.sh/#room=demo&filter=Alpha+Beta" },
+    ])
+    expect(webInviteUrl(state)).toBe("https://rtme.sh/#room=demo&filter=Alpha+Beta")
+    expect(inviteWebLabel(state)).toBe("rtme.sh/#room=demo&filter=Alpha+Beta")
+    expect(inviteCliText(state)).toBe("bunx rtme.sh --room demo --filter 'Alpha Beta'")
+    expect(aboutWebUrl(state)).toBe("https://rtme.sh/#room=demo&filter=Alpha+Beta")
+    expect(aboutWebLabel(state)).toBe("rtme.sh/#room=demo&filter=Alpha+Beta")
+    expect(aboutCliCommand(state)).toBe("--room demo --filter 'Alpha Beta' --events")
+    expect(resumeWebUrl(state)).toBe("https://rtme.sh/#room=demo&filter=Alpha+Beta")
+    expect(resumeCliCommand(state)).toBe("bunx rtme.sh --room demo --self alice-12345678 --filter 'Alpha Beta' --events")
+    expect(resumeOutputLines(state)).toEqual([
+      "Rejoin with:",
+      "",
+      "Web",
+      "https://rtme.sh/#room=demo&filter=Alpha+Beta",
+      "",
+      "CLI",
+      "bunx rtme.sh --room demo --self alice-12345678 --filter 'Alpha Beta' --events",
+      "",
     ])
   })
 
@@ -1644,6 +1687,22 @@ describe("TUI view", () => {
     expect(p1.rect.y < p2.rect.y).toBe(true)
 
     state.peerSearch = "bob-p2"
+    const filtered = renderer.render(renderTuiView(state, createNoopTuiActions()))
+    expect(filtered.findById("peer-row-p1")).toBe(null)
+    expect(filtered.findById("peer-row-p2") === null).toBe(false)
+  })
+
+  test("applies launch-time peer filters to the rendered list", () => {
+    const renderer = createWideRenderer()
+    const state = createInitialTuiState({ room: "demo", reconnectSocket: false }, false, { filter: "bob-p2" })
+    state.snapshot = {
+      ...state.snapshot,
+      peers: [
+        { id: "p2", name: "bob", displayName: "bob-p2", presence: "active", selected: true, selectable: true, ready: true, status: "connected", turn: "stun", turnState: "none", dataState: "open", lastError: "", rttMs: 0, localCandidateType: "", remoteCandidateType: "", pathLabel: "—" },
+        { id: "p1", name: "alice", displayName: "alice-p1", presence: "active", selected: true, selectable: true, ready: true, status: "connected", turn: "stun", turnState: "none", dataState: "open", lastError: "", rttMs: 0, localCandidateType: "", remoteCandidateType: "", pathLabel: "—" },
+      ],
+    }
+
     const filtered = renderer.render(renderTuiView(state, createNoopTuiActions()))
     expect(filtered.findById("peer-row-p1")).toBe(null)
     expect(filtered.findById("peer-row-p2") === null).toBe(false)

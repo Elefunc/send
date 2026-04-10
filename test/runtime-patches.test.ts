@@ -1,11 +1,16 @@
 import { describe, expect, test } from "bun:test"
+import { spawn } from "node:child_process"
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const reziCorePackagePath = resolve(packageRoot, "node_modules/@rezi-ui/core")
+const runtimeInstallUrl = pathToFileURL(resolve(packageRoot, "runtime/install.ts")).href
+const bunDgramPatchUrl = pathToFileURL(resolve(packageRoot, "runtime/bun-dgram-recv-econnrefused.ts")).href
+const require = createRequire(import.meta.url)
 
 const forceTextState = (path: string, from: string, to: string) => {
   const source = readFileSync(path, "utf8")
@@ -34,6 +39,41 @@ const createInstalledShape = () => {
     mouseRoutingPath: join(reziCoreRoot, "dist/app/widgetRenderer/mouseRouting.js"),
   }
 }
+
+const runBunEval = (script: string, timeoutMs = 4_000) => new Promise<{ stdout: string; stderr: string; exitCode: number | null }>((resolveRun, reject) => {
+  const child = spawn(process.execPath, ["--eval", script], {
+    cwd: packageRoot,
+    stdio: ["ignore", "pipe", "pipe"],
+  })
+  let stdout = ""
+  let stderr = ""
+  const timeout = setTimeout(() => {
+    child.kill("SIGKILL")
+    reject(new Error(`timed out after ${timeoutMs}ms`))
+  }, timeoutMs)
+  child.stdout.on("data", chunk => { stdout += `${chunk}` })
+  child.stderr.on("data", chunk => { stderr += `${chunk}` })
+  child.on("error", error => {
+    clearTimeout(timeout)
+    reject(error)
+  })
+  child.on("close", exitCode => {
+    clearTimeout(timeout)
+    resolveRun({ stdout, stderr, exitCode })
+  })
+})
+
+const udpRecvProbeScript = (entrypoint: "ensureSessionRuntimePatches" | "ensureTuiRuntimePatches") => `
+  const { ${entrypoint} } = await import(${JSON.stringify(runtimeInstallUrl)})
+  await ${entrypoint}()
+  const { createSocket } = await import("node:dgram")
+  const socket = createSocket("udp4")
+  await new Promise(resolve => socket.bind(0, "127.0.0.1", resolve))
+  socket.send(Buffer.from("x"), 9, "127.0.0.1")
+  await Bun.sleep(250)
+  await new Promise(resolve => socket.close(resolve))
+  console.log("probe-ok")
+`
 
 describe("runtime dependency patches", () => {
   const idempotenceShape = createInstalledShape()
@@ -121,5 +161,47 @@ describe("runtime dependency patches", () => {
       message = error instanceof Error ? error.message : `${error}`
     }
     expect(message).toContain("value.length + 3")
+  })
+
+  test("session runtime patch swallows Bun UDP recv ECONNREFUSED crashes", async () => {
+    const result = await runBunEval(udpRecvProbeScript("ensureSessionRuntimePatches"))
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain("probe-ok")
+    expect(result.stderr).toBe("")
+  })
+
+  test("TUI runtime patch includes the Bun UDP recv ECONNREFUSED guard", async () => {
+    const result = await runBunEval(udpRecvProbeScript("ensureTuiRuntimePatches"))
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain("probe-ok")
+    expect(result.stderr).toBe("")
+  })
+
+  test("session runtime patch stays idempotent for new UDP sockets", async () => {
+    const { ensureSessionRuntimePatches } = await import(runtimeInstallUrl) as {
+      ensureSessionRuntimePatches: () => Promise<void>
+    }
+
+    await ensureSessionRuntimePatches()
+    await ensureSessionRuntimePatches()
+
+    const { createSocket } = require("node:dgram") as typeof import("node:dgram")
+    const socket = createSocket("udp4")
+    expect(socket.listenerCount("error")).toBe(1)
+    socket.close()
+  })
+
+  test("marks only Bun 1.3.12 as affected by the UDP recv ECONNREFUSED regression", async () => {
+    const runtime = await import(bunDgramPatchUrl) as {
+      AFFECTED_BUN_DGRAM_RECV_ECONNREFUSED_VERSIONS: Set<string>
+      isAffectedBunDgramRecvEconnrefusedVersion: (version?: string) => boolean
+    }
+
+    expect([...runtime.AFFECTED_BUN_DGRAM_RECV_ECONNREFUSED_VERSIONS]).toEqual(["1.3.12"])
+    expect(runtime.isAffectedBunDgramRecvEconnrefusedVersion("1.3.12")).toBe(true)
+    expect(runtime.isAffectedBunDgramRecvEconnrefusedVersion("1.3.11")).toBe(false)
+    expect(runtime.isAffectedBunDgramRecvEconnrefusedVersion("1.3.13")).toBe(false)
+    expect(runtime.isAffectedBunDgramRecvEconnrefusedVersion("")).toBe(false)
+    expect(runtime.isAffectedBunDgramRecvEconnrefusedVersion(undefined)).toBe(false)
   })
 })

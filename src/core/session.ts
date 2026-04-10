@@ -11,7 +11,8 @@ import {
   FINAL_STATUSES,
   SENDABLE_STATUSES,
   SIGNAL_WS_URL,
-  buildCliProfile,
+  buildLocalProfile,
+  cleanUaBrowser,
   cleanText,
   cleanInstanceId,
   cleanLocalId,
@@ -175,6 +176,7 @@ export interface SessionConfig {
   room?: string
   localId?: string
   name?: string
+  uaBrowser?: string
   saveDir?: string
   peerSelectionMemory?: Map<string, boolean>
   acceptFromSelectors?: string[]
@@ -269,7 +271,7 @@ export const sanitizeProfile = (profile?: PeerProfile): PeerProfile => ({
   error: cleanText(profile?.error, 120),
 })
 
-export const localProfileFromResponse = (data: unknown, error = ""): PeerProfile => {
+export const localProfileFromResponse = (data: unknown, error = "", uaBrowser?: string): PeerProfile => {
   const value = data as {
     cf?: { city?: unknown; region?: unknown; country?: unknown; timezone?: unknown; colo?: unknown; asOrganization?: unknown; asn?: unknown }
     hs?: Record<string, unknown>
@@ -288,7 +290,7 @@ export const localProfileFromResponse = (data: unknown, error = ""): PeerProfile
       asn: Number(value?.cf?.asn) || 0,
       ip: cleaned(value?.hs?.["cf-connecting-ip"] || value?.hs?.["x-real-ip"], 80),
     },
-    ua: buildCliProfile().ua,
+    ua: buildLocalProfile(uaBrowser).ua,
     streamingSaveIncoming: true,
     ready: !!value?.cf,
     error,
@@ -451,7 +453,8 @@ const messageString = async (value: unknown) => {
 export class SendSession {
   readonly instanceId: string
   readonly localId: string
-  profile = sanitizeProfile(buildCliProfile())
+  readonly uaBrowser: string
+  profile: PeerProfile
   readonly saveDir: string
   readonly room: string
   turnAvailable: boolean
@@ -494,6 +497,7 @@ export class SendSession {
     this.localId = cleanLocalId(config.localId)
     this.room = cleanRoom(config.room)
     this.name = cleanName(config.name ?? fallbackName)
+    this.uaBrowser = cleanUaBrowser(config.uaBrowser)
     this.saveDir = resolve(config.saveDir ?? resolve(process.cwd()))
     this.peerSelectionMemory = config.peerSelectionMemory ?? new Map()
     this.acceptFromSelectors = acceptFrom.selectors
@@ -504,6 +508,7 @@ export class SendSession {
     this.extraTurnServers = turnServers(config.turnUrls ?? [], config.turnUsername, config.turnCredential)
     this.iceServers = [...BASE_ICE_SERVERS, ...this.extraTurnServers]
     this.turnAvailable = this.extraTurnServers.length > 0
+    this.profile = sanitizeProfile(buildLocalProfile(this.uaBrowser))
   }
 
   subscribe(listener: () => void) {
@@ -1276,10 +1281,10 @@ export class SendSession {
       if (!response.ok) throw new Error(`profile ${response.status}`)
       const data = await response.json()
       if (this.stopped) return
-      this.profile = localProfileFromResponse(data)
+      this.profile = localProfileFromResponse(data, "", this.uaBrowser)
     } catch (error) {
       if (this.stopped) return
-      this.profile = localProfileFromResponse(null, `${error}`)
+      this.profile = localProfileFromResponse(null, `${error}`, this.uaBrowser)
       this.pushLog("profile:error", { error: `${error}` }, "error")
     }
     if (this.stopped) return

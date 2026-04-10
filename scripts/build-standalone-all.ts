@@ -5,9 +5,7 @@ import { fileURLToPath } from "node:url"
 import {
   assertWindowsSigningPrerequisites,
   isWsl2Host,
-  signWindowsArtifactsFromWsl,
   WINDOWS_PREREQS_CHECKED_ENV,
-  WINDOWS_SKIP_SIGN_ENV,
 } from "./build-standalone"
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
@@ -78,7 +76,6 @@ const main = () => {
   if (hasWindowsStandaloneTargets(standaloneCompileTargets)) assertWindowsSigningPrerequisites("bun-windows-x64")
 
   mkdirSync(outRoot, { recursive: true })
-  const builtWindowsArtifacts: string[] = []
 
   try {
     for (const [index, target] of standaloneCompileTargets.entries()) {
@@ -90,15 +87,15 @@ const main = () => {
       if (artifactPath !== outfile) rmSync(artifactPath, { force: true })
       console.log(`[${index + 1}/${standaloneCompileTargets.length}] Building ${target} -> out/${artifactName}`)
       const env = target.includes("windows")
-        ? { ...process.env, [WINDOWS_PREREQS_CHECKED_ENV]: "1", [WINDOWS_SKIP_SIGN_ENV]: "1" }
+        ? { ...process.env, [WINDOWS_PREREQS_CHECKED_ENV]: "1" }
         : process.env
       runBuild(target, outfile, env)
       if (!existsSync(artifactPath)) throw new Error(`Expected artifact was not created for ${target}: ${artifactPath}`)
-      if (target.includes("windows")) builtWindowsArtifacts.push(artifactPath)
     }
-    if (builtWindowsArtifacts.length) signWindowsArtifactsFromWsl(builtWindowsArtifacts)
   } catch (error) {
-    for (const artifactPath of builtWindowsArtifacts) rmSync(artifactPath, { force: true })
+    for (const target of standaloneCompileTargets.filter(value => value.includes("windows"))) {
+      rmSync(join(outRoot, standaloneTargetToArtifactName(target)), { force: true })
+    }
     throw error
   }
 

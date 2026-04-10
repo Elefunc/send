@@ -80,6 +80,11 @@ describe("SendSession mutators", () => {
     expect(session.snapshot().turnState).toBe("none")
   })
 
+  test("allows overriding the advertised local UA browser", () => {
+    const session = new SendSession({ room: "demo", reconnectSocket: false, uaBrowser: "send-tui" })
+    expect(session.snapshot().profile?.ua?.browser).toBe("send-tui")
+  })
+
   test("rebroadcasts advertised profile defaults when auto-accept, auto-save, and overwrite change", async () => {
     const sent: string[] = []
     const session = new SendSession({ room: "demo", reconnectSocket: false }) as any
@@ -1168,6 +1173,14 @@ describe("SendSession mutators", () => {
     expect(profile.ua?.browser).toBe("send-cli")
     expect(profile.streamingSaveIncoming).toBe(true)
     expect(profile.ready).toBe(true)
+  })
+
+  test("preserves the configured local UA browser when hydrating profile data", () => {
+    const profile = localProfileFromResponse({
+      cf: { city: "Seoul", region: "Seoul", country: "KR", colo: "ICN", asOrganization: "Edge ISP", asn: 64512 },
+      hs: { "cf-connecting-ip": "203.0.113.5" },
+    }, "", "send-tui")
+    expect(profile.ua?.browser).toBe("send-tui")
   })
 
   test("loads local profile data into the session snapshot", async () => {

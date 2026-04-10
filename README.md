@@ -29,6 +29,7 @@ When no subcommand is provided, `send` launches the TUI by default.
 `--room` is optional on all commands. If you omit it, `send` creates a random room and prints or shows it.
 
 In the TUI, the room row includes a `📋` invite link that opens the equivalent web app URL for the current committed room and toggle state.
+When a peer filter is active, that invite link also carries the current filter.
 
 ## Command Scope
 
@@ -59,6 +60,7 @@ send peers --self alice
 send offer ./demo.txt --self alice-ab12cd34
 send accept --self=-ab12cd34
 send accept --from alice --N 1
+send tui --filter bob-p2
 SEND_SELF=-ab12cd34 send tui
 ```
 

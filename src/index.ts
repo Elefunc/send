@@ -2,7 +2,7 @@
 import { resolve } from "node:path"
 import { cac, type CAC } from "cac"
 import { joinOutputLines, type JoinOutputKind } from "./core/invite"
-import { cleanRoom, displayPeerName } from "./core/protocol"
+import { cleanFilter, cleanRoom, displayPeerName } from "./core/protocol"
 import type { SendSession, SessionConfig, SessionEvent } from "./core/session"
 import { resolvePeerTargets, validatePeerSelectors } from "./core/targeting"
 import { ensureSessionRuntimePatches, ensureTuiRuntimePatches } from "../runtime/install"
@@ -107,6 +107,7 @@ const ACCEPT_VISIBLE_OPTIONS = [
 ] as const
 const TUI_VISIBLE_OPTIONS = [
   ...ROOM_SELF_OPTIONS,
+  ["--filter <text>", "preload the peer filter"],
   ...TUI_TOGGLE_OPTIONS,
   ["--events", "show the event log pane"],
   FOLDER_OPTION,
@@ -370,6 +371,7 @@ const tuiCommand = async (options: Record<string, unknown>) => {
   const { startTui } = await loadTuiRuntime()
   await startTui(initialConfig, {
     events: !!options.events,
+    filter: cleanFilter(options.filter),
     clean: clean ?? true,
     offer: offer ?? true,
     draftPaths,

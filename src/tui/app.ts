@@ -15,7 +15,7 @@ import {
   webInviteUrl as formatWebInviteUrl,
 } from "../core/invite"
 import { isSessionAbortedError, SendSession, signalMetricState, type PeerSnapshot, type SessionConfig, type SessionSnapshot, type TransferSnapshot } from "../core/session"
-import { cleanLocalId, cleanName, cleanRoom, displayPeerName, fallbackName, formatBytes, type LogEntry, peerDefaultsToken, type PeerProfile, uid } from "../core/protocol"
+import { cleanFilter, cleanLocalId, cleanName, cleanRoom, displayPeerName, fallbackName, formatBytes, type LogEntry, peerDefaultsToken, type PeerProfile, uid } from "../core/protocol"
 import { FILE_SEARCH_VISIBLE_ROWS, type FileSearchEvent, type FileSearchMatch, type FileSearchRequest } from "./file-search-protocol"
 import { deriveFileSearchScope, formatFileSearchDisplayPath, normalizeSearchQuery, offsetFileSearchMatchIndices } from "./file-search"
 import { applyInputEditEvent } from "./input-editor"
@@ -59,7 +59,7 @@ type DenseSectionOptions = {
   border?: "rounded" | "single" | "none"
   flex?: number
 }
-type TuiLaunchOptions = { events?: boolean; clean?: boolean; offer?: boolean; draftPaths?: readonly string[] }
+type TuiLaunchOptions = { events?: boolean; filter?: string; clean?: boolean; offer?: boolean; draftPaths?: readonly string[] }
 
 export type VisiblePane = "peers" | "transfers" | "logs"
 
@@ -165,6 +165,7 @@ const percentFormat = new Intl.NumberFormat(undefined, { maximumFractionDigits: 
 const timeFormat = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" })
 const pluralRules = new Intl.PluralRules()
 const DRAFT_HISTORY_LIMIT = 50
+const TUI_UA_BROWSER = "send-tui"
 
 export const visiblePanes = (showEvents: boolean): VisiblePane[] => showEvents ? ["peers", "transfers", "logs"] : ["peers", "transfers"]
 export const TUI_NODE_APP_CONFIG = Object.freeze({
@@ -191,10 +192,11 @@ type BunSpawn = (cmd: string[], options: {
   stderr?: "pipe" | "inherit" | "ignore"
 }) => { unref?: () => void }
 type BunLike = { spawn?: BunSpawn }
-type ShareUrlState = Pick<TuiState, "snapshot" | "hideTerminalPeers" | "autoAcceptIncoming" | "autoOfferOutgoing" | "autoSaveIncoming" | "overwriteIncoming">
+type ShareUrlState = Pick<TuiState, "snapshot" | "peerSearch" | "hideTerminalPeers" | "autoAcceptIncoming" | "autoOfferOutgoing" | "autoSaveIncoming" | "overwriteIncoming">
 type ShareCliState = ShareUrlState & Pick<TuiState, "sessionSeed" | "eventsExpanded">
 const shareUrlOptions = (state: ShareUrlState) => ({
   room: cleanRoom(state.snapshot.room),
+  filter: cleanFilter(state.peerSearch),
   clean: state.hideTerminalPeers,
   accept: state.autoAcceptIncoming,
   offer: state.autoOfferOutgoing,
@@ -549,6 +551,7 @@ const visibleNameInput = (name: string) => cleanName(name) === fallbackName ? ""
 
 const normalizeSessionSeed = (config: SessionConfig): SessionSeed => ({
   ...config,
+  uaBrowser: TUI_UA_BROWSER,
   localId: cleanLocalId(config.localId ?? uid(8)),
   name: cleanName(config.name ?? fallbackName),
   room: cleanRoom(config.room),
@@ -716,7 +719,7 @@ export const groupTransfersByPeer = (transfers: TransferSnapshot[], peers: PeerS
   return [...groups.values()]
 }
 
-export const createInitialTuiState = (initialConfig: SessionConfig, showEvents = false, launchOptions: Pick<TuiLaunchOptions, "clean" | "offer"> = {}): TuiState => {
+export const createInitialTuiState = (initialConfig: SessionConfig, showEvents = false, launchOptions: Pick<TuiLaunchOptions, "filter" | "clean" | "offer"> = {}): TuiState => {
   const sessionSeed = normalizeSessionSeed(initialConfig)
   const autoAcceptIncoming = initialConfig.autoAcceptIncoming ?? true
   const autoSaveIncoming = initialConfig.autoSaveIncoming ?? true
@@ -731,7 +734,7 @@ export const createInitialTuiState = (initialConfig: SessionConfig, showEvents =
     snapshot: session.snapshot(),
     aboutOpen: false,
     inviteDropdownOpen: false,
-    peerSearch: "",
+    peerSearch: cleanFilter(launchOptions.filter),
     focusedId: null,
     roomInput: sessionSeed.room,
     nameInput: visibleNameInput(sessionSeed.name),
@@ -1722,7 +1725,7 @@ export const startTui = async (initialConfig: SessionConfig, launchOptions: TuiL
       peerSelectionByRoom: current.peerSelectionByRoom,
       snapshot: nextSession.snapshot(),
       inviteDropdownOpen: false,
-      peerSearch: "",
+      peerSearch: current.peerSearch,
       roomInput: nextSeed.room,
       nameInput: visibleNameInput(nextSeed.name),
       draftInput: "",
@@ -1821,7 +1824,7 @@ export const startTui = async (initialConfig: SessionConfig, launchOptions: TuiL
     jumpToNewSelf: () => replaceSession({ ...state.sessionSeed, localId: cleanLocalId(uid(8)) }, "Started a fresh self ID.", { reseedBootFocus: true }),
     commitName,
     setNameInput: value => commit(current => ({ ...current, nameInput: value })),
-    setPeerSearch: value => commit(current => ({ ...current, peerSearch: value })),
+    setPeerSearch: value => commit(current => ({ ...current, peerSearch: cleanFilter(value) })),
     toggleSelectReadyPeers: () => {
       const peers = renderedPeers(state.snapshot.peers, state.hideTerminalPeers, state.peerSearch)
       let changed = 0

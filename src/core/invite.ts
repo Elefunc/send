@@ -1,11 +1,12 @@
 import { resolve } from "node:path"
-import { cleanRoom } from "./protocol"
+import { cleanFilter, cleanRoom } from "./protocol"
 
 export const DEFAULT_WEB_URL = "https://rtme.sh/"
 export const COPY_SERVICE_URL = "https://copy.rt.ht/"
 
 export type ShareUrlOptions = {
   room: string
+  filter?: string
   clean?: boolean
   accept?: boolean
   offer?: boolean
@@ -30,6 +31,7 @@ const safeShellArgPattern = /^[A-Za-z0-9._/:?=&,+@%-]+$/
 
 const normalizeShareUrlOptions = (options: ShareUrlOptions) => ({
   room: cleanRoom(options.room),
+  filter: cleanFilter(options.filter),
   clean: options.clean ?? true,
   accept: options.accept ?? true,
   offer: options.offer ?? true,
@@ -47,6 +49,7 @@ export const appendCliFlag = (args: string[], flag: string, value?: string | nul
 
 export const appendToggleCliFlags = (args: string[], options: ShareUrlOptions) => {
   const normalized = normalizeShareUrlOptions(options)
+  appendCliFlag(args, "--filter", normalized.filter)
   if (!normalized.clean) appendCliFlag(args, "--clean", "0")
   if (!normalized.accept) appendCliFlag(args, "--accept", "0")
   if (!normalized.offer) appendCliFlag(args, "--offer", "0")
@@ -57,6 +60,7 @@ export const appendToggleCliFlags = (args: string[], options: ShareUrlOptions) =
 const buildHashParams = (options: ShareUrlOptions, omitDefaults = false) => {
   const normalized = normalizeShareUrlOptions(options)
   const params = new URLSearchParams({ room: normalized.room })
+  if (normalized.filter) params.set("filter", normalized.filter)
   if (!omitDefaults || !normalized.clean) params.set("clean", hashBool(normalized.clean))
   if (!omitDefaults || !normalized.accept) params.set("accept", hashBool(normalized.accept))
   if (!omitDefaults || !normalized.offer) params.set("offer", hashBool(normalized.offer))

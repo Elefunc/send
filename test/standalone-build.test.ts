@@ -30,6 +30,7 @@ import {
   parseBuildArgs,
   renderWslWindowsBridgeScript,
   standaloneArtifactPathFromOutfile,
+  windowsBridgeArtifactPaths,
   WINDOWS_BRIDGE_ENV,
   WINDOWS_ICON_PATH,
 } from "../scripts/build-standalone"
@@ -249,6 +250,19 @@ describe("standalone builder", () => {
     expect(standaloneArtifactPathFromOutfile("/tmp/send", "bun-windows-x64", "win32")).toBe("/tmp/send.exe")
     expect(standaloneArtifactPathFromOutfile("/tmp/send.exe", "bun-windows-x64", "win32")).toBe("/tmp/send.exe")
     expect(standaloneArtifactPathFromOutfile("/tmp/send", "bun-linux-x64", "linux")).toBe("/tmp/send")
+  })
+
+  test("stages WSL Windows bridge artifacts in Windows temp before copying them to the requested output", () => {
+    const paths = windowsBridgeArtifactPaths(
+      "/tmp/release/out/send-windows-x64",
+      "bun-windows-x64",
+      "/mnt/c/Users/cetin/AppData/Local/Temp/send-standalone-windows-abcd1234",
+    )
+    expect(paths).toEqual({
+      stageOutfile: "/mnt/c/Users/cetin/AppData/Local/Temp/send-standalone-windows-abcd1234/send-windows-x64",
+      stageArtifactPath: "/mnt/c/Users/cetin/AppData/Local/Temp/send-standalone-windows-abcd1234/send-windows-x64.exe",
+      finalArtifactPath: "/tmp/release/out/send-windows-x64.exe",
+    })
   })
 
   test("all-target builder locks the full Bun target matrix", () => {

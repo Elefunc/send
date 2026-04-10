@@ -215,12 +215,19 @@ export const uid = (n = 8) => [...crypto.getRandomValues(new Uint8Array(n))].map
 export const cleanText = (value: unknown, max = 72) => `${value ?? ""}`.trim().replace(/\s+/g, " ").slice(0, max)
 export const cleanRoom = (value: unknown) => cleanText(value).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || uid(8)
 export const cleanName = (value: unknown) => cleanText(value, 24).toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 24) || fallbackName
+export const cleanFilter = (value: unknown) => {
+  const text = `${value ?? ""}`
+  return text.trim() ? text : ""
+}
 export const cleanLocalId = (value: unknown) => cleanText(value, 24).toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 24) || uid(8)
 export const cleanInstanceId = (value: unknown) => cleanText(value, 24).toLowerCase().replace(/[^a-z0-9]+/g, "").slice(0, 24)
 export const signalEpoch = (value: unknown) => Number.isSafeInteger(value) && Number(value) > 0 ? Number(value) : 0
 
-export const buildCliProfile = (): PeerProfile => ({
-  ua: { browser: "send-cli", os: process.platform, device: "desktop" },
+export const DEFAULT_UA_BROWSER = "send-cli"
+export const cleanUaBrowser = (value: unknown, fallback = DEFAULT_UA_BROWSER) => cleanText(value, 32) || fallback
+
+export const buildLocalProfile = (browser: unknown = DEFAULT_UA_BROWSER): PeerProfile => ({
+  ua: { browser: cleanUaBrowser(browser), os: process.platform, device: "desktop" },
   streamingSaveIncoming: true,
   ready: true,
 })
